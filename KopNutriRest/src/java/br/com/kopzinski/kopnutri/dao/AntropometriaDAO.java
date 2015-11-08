@@ -87,7 +87,7 @@ public class AntropometriaDAO implements CommonDaoInterface<Antropometria, Strin
 	}
         
         public List<Antropometria> findAllbyAtleta(int idAtleta) {
-            Query query = getCurrentSession().createQuery("from Antropometria where idatleta = :idAtleta");
+            Query query = getCurrentSession().createQuery("from Antropometria where idatleta = :idAtleta order by data desc");
             query.setParameter("idAtleta", idAtleta);
             return (List<Antropometria>) query.list();
         }
