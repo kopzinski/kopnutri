@@ -6,10 +6,8 @@ import br.com.kopzinski.kopnutri.converter.AntropometriaJsonConverter;
 import br.com.kopzinski.kopnutri.entities.Antropometria;
 import br.com.kopzinski.kopnutri.entities.Atleta;
 import br.com.kopzinski.kopnutri.service.AntropometriaService;
-import helloworld.NameStorageBean;
 import java.util.Date;
 import java.util.List;
-import javax.ejb.EJB;
 import javax.ejb.Stateless;
 
 import javax.ws.rs.Path;
@@ -32,6 +30,9 @@ public class KopNutriRestResource {
     private final AntropometriaController antropometriaController = new AntropometriaController();
     private final AntropometriaService antropometriaService = new AntropometriaService();
     
+    private String jsonpReturn(String str) {
+        return "parseResponse("+str+");";
+    }    
 ///atletas/{id}/antropometrias
 //GET - lista todas as antropometrias de um atleta
     @GET    
@@ -40,29 +41,31 @@ public class KopNutriRestResource {
         List<Antropometria> antropometrias = antropometriaService.findAllByIdAtleta(Integer.parseInt(id));
         JSONObject novoOb = new JSONObject();
         novoOb.put("antropometrias", new JSONArray(antropometrias));
-        return novoOb.toString();
+        return jsonpReturn(new JSONArray(antropometrias).toString());
     }    
 //POST - adiciona uma antropometria para o atleta
     @POST
     @Path("/atletas/{id}/antropometrias")
     public String adicionaAntropometriaParaAtleta(@PathParam("id") String id, String contexto) {
+        System.out.println("Kop! contexto:" + contexto);
         JSONObject ob = new JSONObject();
         Atleta atleta = atletaController.getObjetoService().findById(id);
         if(atleta == null) 
             return retornaErro("Atleta nao encontrado");
         
         JSONObject req = new JSONObject(contexto);
-        JSONObject reqAnt = req.getJSONObject("Antropometria");
+//        JSONObject reqAnt = req.getJSONObject("Antropometria");
         
         Antropometria a = new Antropometria();
         a.setAtleta(atleta);
         a.setData(new Date());
-        a.setPeso(reqAnt.getBigDecimal("peso"));
+//        a.setPeso(reqAnt.getBigDecimal("peso"));
+        a.setPeso(req.getBigDecimal("peso"));
         
         antropometriaService.persist(a);
         
-        ob.put("Antropometria", AntropometriaJsonConverter.toJson(a));
-        return ob.toString();
+//        ob.put("Antropometria", AntropometriaJsonConverter.toJson(a));
+        return jsonpReturn(a.toString());
     }
 //DELETE - exclui todas as antropometrias do atleta
     @DELETE
@@ -70,8 +73,10 @@ public class KopNutriRestResource {
     public String excluiAntropometriaDoAtleta(@PathParam("id") String id) {
         JSONObject ob = new JSONObject();
         ob.put("teste", "teste");
-        return ob.toString();
+        return jsonpReturn(ob.toString());
     }
+    
+    
 //
 //
 ///atletas
@@ -81,11 +86,10 @@ public class KopNutriRestResource {
     public String listaAtletas() {
         JSONObject ob = new JSONObject();
         List<Atleta> atletas = atletaController.getObjetos();
+        JSONArray ar = new JSONArray(atletas);
         ob.put("atletas", atletas);
-//        for (Atleta atleta : atletas) {
-//            ob.put(String.valueOf(atleta.getId()),atleta.getNome());
-//        }
-        return ob.toString();
+        
+        return jsonpReturn(ar.toString());
     }
 //POST - insere um atleta novo
     @POST
@@ -179,5 +183,7 @@ public class KopNutriRestResource {
         ob.put("ERRO", msg);
         return ob.toString();
     }
+
+    
     
 }

@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<!DOCTYPE hibernate-mapping PUBLIC "-//Hibernate/Hibernate Mapping DTD 3.0//EN"
+"http://www.hibernate.org/dtd/hibernate-mapping-3.0.dtd">
+<!-- Generated Oct 16, 2015 8:03:12 PM by Hibernate Tools 4.3.1 -->
+<hibernate-mapping>
+    <class name="br.com.kopzinski.kopnutri.entities.Atleta" table="atleta" schema="public" optimistic-lock="version">
+        <id name="id" type="int">
+            <column name="id" />
+            <generator class="increment" />
+        </id>
+        <property name="nome" type="string">
+            <column name="nome" length="100" not-null="true" />
+        </property>
+        <property name="nascimento" type="date">
+            <column name="nascimento" length="13" not-null="true" />
+        </property>
+        <set name="antropometrias" table="antropometria" inverse="true"  lazy="true" fetch="select">
+            <key>
+                <column name="idatleta" />
+            </key>
+            <one-to-many class="br.com.kopzinski.kopnutri.entities.Antropometria" />
+        </set>
+    </class>
+</hibernate-mapping>
