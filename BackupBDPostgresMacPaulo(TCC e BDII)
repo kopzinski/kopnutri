@@ -1,0 +1,3648 @@
+--
+-- PostgreSQL database dump
+--
+
+-- Dumped from database version 9.4.4
+-- Dumped by pg_dump version 9.4.0
+-- Started on 2015-11-08 12:46:35 BRST
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SET check_function_bodies = false;
+SET client_min_messages = warning;
+
+--
+-- TOC entry 210 (class 3079 OID 12123)
+-- Name: plpgsql; Type: EXTENSION; Schema: -; Owner: 
+--
+
+CREATE EXTENSION IF NOT EXISTS plpgsql WITH SCHEMA pg_catalog;
+
+
+--
+-- TOC entry 2547 (class 0 OID 0)
+-- Dependencies: 210
+-- Name: EXTENSION plpgsql; Type: COMMENT; Schema: -; Owner: 
+--
+
+COMMENT ON EXTENSION plpgsql IS 'PL/pgSQL procedural language';
+
+
+SET search_path = public, pg_catalog;
+
+--
+-- TOC entry 232 (class 1255 OID 16592)
+-- Name: atuacao(character varying, numeric); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION atuacao(p_cnh character varying, p_velocidade numeric) RETURNS character varying
+    LANGUAGE plpgsql
+    AS $$
+declare
+	_motorista ex_motorista%rowtype;
+	_total_pontos ex_multa.pontos%type;
+	_pontos int;
+	_valor decimal(9,2);
+	_vel_calculada decimal(5,2) := p_velocidade * 0.9;
+	_infracao char(1) := 's';
+
+begin
+
+	if _vel_calculada > 80.0 AND _vel_calculada <= 110.0 then
+		_pontos := 20;
+		_valor := 120.0;
+	elseif _vel_calculada > 110.0 AND _vel_calculada <= 140.0 then
+		_pontos := 40;
+		_valor := 350.0;
+	elseif _vel_calculada > 140.0  then
+		_pontos := 60;
+		_valor := 680.0;
+	else 
+		_infracao := 'n';
+	end if;
+
+	if _infracao = 's' then
+		insert into ex_multa (cnh, velocidadeApurada, velocidadeCalculada, pontos, valor)
+			values (p_cnh, p_velocidade, _vel_calculada, _pontos, _valor );
+	end if;
+
+	select * into _motorista from ex_motorista where cnh = p_cnh; 
+	select sum(pontos) into _total_pontos from ex_multa where cnh = p_cnh; 
+
+	if _total_pontos is NULL OR _total_pontos = 0 then
+		return  'O motorista ' || _motorista.nome || ' nao possui pontos em multas';
+	else
+		return  'O motorista ' || _motorista.nome || ' soma '|| _total_pontos || ' pontos em multas. ';
+	end if;
+
+end;
+$$;
+
+
+ALTER FUNCTION public.atuacao(p_cnh character varying, p_velocidade numeric) OWNER TO kopzinski;
+
+--
+-- TOC entry 231 (class 1255 OID 16594)
+-- Name: atualiza_cnhs(); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION atualiza_cnhs() RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+declare
+	_cnh ex_motorista.cnh%type;
+
+begin
+	update ex_motorista set totalMultas = 0.0;
+
+    for _cnh IN select distinct(cnh) from ex_multa
+    loop
+        update ex_motorista 
+        	set totalMultas = (
+				select sum(ex_categoria.valor) 
+				from ex_multa, ex_categoria
+				where 
+					ex_multa.idCategoria = ex_categoria.idCategoria
+					and 
+					cnh = _cnh
+        		) 
+        	where cnh = _cnh;
+    end loop;
+
+end;
+$$;
+
+
+ALTER FUNCTION public.atualiza_cnhs() OWNER TO kopzinski;
+
+--
+-- TOC entry 240 (class 1255 OID 16952)
+-- Name: atualiza_hospedagem(integer, integer, numeric, date); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION atualiza_hospedagem(codhospedagem integer, novocodatendente integer, novovalordiaria numeric, novadatasaida date) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+declare
+	_SQL TEXT;
+	_TOTAL INTEGER :=0;
+
+begin
+
+	_SQL := 'update hospedagem set codHospedagem = ' || codHospedagem ;
+
+	IF novoCodAtendente IS NOT NULL THEN
+		_SQL := _SQL || ' , codAtendente = ' || novoCodAtendente;
+	END IF;
+
+	IF novoValorDiaria IS NOT NULL THEN
+		_SQL := _SQL || ' , valorDiaria = ' || novoValorDiaria;
+	END IF;
+
+	IF novaDataSaida IS NOT NULL THEN
+		_SQL := _SQL || ' , dataSaida = ''' || novaDataSaida || '''';
+	END IF;
+
+	_SQL := _SQL || ' where codHospedagem = ' || codHospedagem;
+
+	RAISE NOTICE '%', _SQL;
+
+	EXECUTE _SQL;
+
+	GET DIAGNOSTICS _TOTAL = ROW_COUNT;
+
+	RETURN _TOTAL;
+end;
+$$;
+
+
+ALTER FUNCTION public.atualiza_hospedagem(codhospedagem integer, novocodatendente integer, novovalordiaria numeric, novadatasaida date) OWNER TO kopzinski;
+
+--
+-- TOC entry 233 (class 1255 OID 16669)
+-- Name: autuacao(character varying, numeric); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION autuacao(p_cnh character varying, p_velocidade numeric) RETURNS character varying
+    LANGUAGE plpgsql
+    AS $$
+declare
+	_motorista ex_motorista%rowtype;
+	_total_pontos ex_categoria.pontos%type;
+	_pontos int;
+	_valor decimal(9,2);
+	_vel_calculada decimal(5,2) := p_velocidade * 0.9;
+	_infracao char(1) := 's';
+	_idCategoria ex_categoria.idCategoria%type;
+
+begin
+	
+	select idCategoria into _idCategoria 
+			from ex_categoria 
+			where 
+				_vel_calculada >= inicioFaixaVelocidade
+				and 
+				_vel_calculada <= finalFaixaVelocidade;			
+
+	if _idCategoria is not null then
+		insert into ex_multa (cnh, idCategoria, velocidadeApurada, velocidadeCalculada, data)
+			values (p_cnh, _idCategoria, p_velocidade, _vel_calculada, 'now' );
+	end if;
+
+	select * into _motorista from ex_motorista where cnh = p_cnh;
+
+	select sum(ex_categoria.pontos) into _total_pontos
+		from ex_multa, ex_categoria
+		where 
+			ex_multa.idCategoria = ex_categoria.idCategoria
+			and 
+			cnh = p_cnh;
+
+	if _total_pontos is NULL OR _total_pontos = 0 then
+		return  'O motorista ' || _motorista.nome || ' nao possui pontos em multas';
+	else
+		return  'O motorista ' || _motorista.nome || ' soma '|| _total_pontos || ' pontos em multas. ';
+	end if;
+
+end;
+$$;
+
+
+ALTER FUNCTION public.autuacao(p_cnh character varying, p_velocidade numeric) OWNER TO kopzinski;
+
+--
+-- TOC entry 237 (class 1255 OID 16888)
+-- Name: fn_dia_semana(integer); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION fn_dia_semana(dia integer) RETURNS character varying
+    LANGUAGE plpgsql
+    AS $$
+declare
+	_dias char(10) [7] := '{"Domingo", "Segunda", "Terca", "Quarta", "Quinta", "Sexta", "Sabado"}';
+	_cliente record;
+begin
+
+raise notice '%', _dias[0];
+for i in 1..7 loop
+	raise notice '%', 'dias da semana:: ' || _dias[i] ;
+end loop;
+
+return _dias[dia];
+
+end;
+$$;
+
+
+ALTER FUNCTION public.fn_dia_semana(dia integer) OWNER TO kopzinski;
+
+--
+-- TOC entry 223 (class 1255 OID 16511)
+-- Name: fn_exemplo_a(); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION fn_exemplo_a() RETURNS integer
+    LANGUAGE plpgsql
+    AS $$ <<bloco_externo>> -- bloco nomeado
+DECLARE
+_qtd integer := 30;
+BEGIN
+RAISE NOTICE 'Quantidade aqui vale: %', _qtd; -- 30
+_qtd := 50;
+--***************
+-- subbloco
+--***************
+DECLARE
+_qtd integer := 80;
+BEGIN
+RAISE NOTICE 'Quantidade (interno) aqui vale: %', _qtd; -- 80
+RAISE NOTICE 'Quantidade (externo) aqui vale: %', bloco_externo._qtd; -- 50 
+END;
+RAISE NOTICE 'Quantidade (externo) aqui vale: %', _qtd; -- 50
+RETURN _qtd;
+END;
+$$;
+
+
+ALTER FUNCTION public.fn_exemplo_a() OWNER TO kopzinski;
+
+--
+-- TOC entry 224 (class 1255 OID 16507)
+-- Name: fn_exemplo_parametros(integer, integer); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION fn_exemplo_parametros(in_a integer, in_b integer) RETURNS numeric
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+_result decimal(8,2);
+BEGIN
+_result := in_a / in_b; return _result;
+END;
+$$;
+
+
+ALTER FUNCTION public.fn_exemplo_parametros(in_a integer, in_b integer) OWNER TO kopzinski;
+
+--
+-- TOC entry 225 (class 1255 OID 16512)
+-- Name: fn_exemplo_parametros(numeric, numeric); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION fn_exemplo_parametros(in_a numeric, in_b numeric) RETURNS numeric
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+_result decimal(8,2);
+BEGIN
+_result := in_a / in_b; return _result;
+END;
+$$;
+
+
+ALTER FUNCTION public.fn_exemplo_parametros(in_a numeric, in_b numeric) OWNER TO kopzinski;
+
+--
+-- TOC entry 226 (class 1255 OID 16571)
+-- Name: fn_exemplotipos(integer); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION fn_exemplotipos(p_cod_cli integer) RETURNS character varying
+    LANGUAGE plpgsql
+    AS $$
+declare
+_cliente xcliente%rowtype;
+_cod_cli xcliente.codcliente%type;
+_msg varchar(80);
+begin
+select * into _cliente from xcliente where cod_cli = p_cod_cli; 
+raise notice '%', 'Atribui um valor a variavel do tipo type'; 
+_cod_cli := 'c1';
+if _cod_cli = _cliente.cod_cli then
+raise notice '%', 'Se cliente for igual a c3 listar o nome do cliente c1';
+ _msg := 'Cliente ja existe : ';
+select * into _cliente from cliente where cod_cli = _cod_cli;
+end if;
+return _msg || _cliente.nome;
+end;
+$$;
+
+
+ALTER FUNCTION public.fn_exemplotipos(p_cod_cli integer) OWNER TO kopzinski;
+
+--
+-- TOC entry 227 (class 1255 OID 16591)
+-- Name: fn_exemplotipos(character varying, numeric); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION fn_exemplotipos(p_cnh character varying, p_velocidade numeric) RETURNS character varying
+    LANGUAGE plpgsql
+    AS $$
+declare
+_motorista ex_motorista%rowtype;
+_cnh ex_motorista.cnh%type := p_cnh;
+_vel_apurada decimal(5,2) := p_velocidade;
+_pontos int;
+_valor decimal(9,2);
+_vel_calculada decimal(5,2);
+_msg varchar(80);
+begin
+select * into _motorista from ex_motorista where cnh = p_cnh; 
+
+_msg := 'O motorista [nome] soma [X] pontos em em multas ';
+--test area START
+_pontos := 10;
+_valor := 11.1;
+_vel_calculada := 21.1;
+
+--test area END
+insert into ex_multa (cnh, velocidadeApurada, velocidadeCalculada, pontos, valor)
+	values (_cnh, _vel_apurada, _vel_calculada, _pontos, _valor );
+
+return _msg ;
+end;
+$$;
+
+
+ALTER FUNCTION public.fn_exemplotipos(p_cnh character varying, p_velocidade numeric) OWNER TO kopzinski;
+
+--
+-- TOC entry 228 (class 1255 OID 16919)
+-- Name: get_random_name(); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION get_random_name() RETURNS character varying
+    LANGUAGE plpgsql
+    AS $$
+
+begin
+
+	RETURN (select nome from nome order by random() limit 1) || ' ' || (
+	select sobrenome from sobrenome order by random() limit 1);
+
+end;
+$$;
+
+
+ALTER FUNCTION public.get_random_name() OWNER TO kopzinski;
+
+--
+-- TOC entry 238 (class 1255 OID 16897)
+-- Name: get_random_number(integer, integer); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION get_random_number(integer, integer) RETURNS integer
+    LANGUAGE plpgsql STRICT
+    AS $_$
+DECLARE
+    start_int ALIAS FOR $1;
+    end_int ALIAS FOR $2;
+BEGIN
+    RETURN trunc(random() * (end_int-start_int) + start_int);
+END;
+$_$;
+
+
+ALTER FUNCTION public.get_random_number(integer, integer) OWNER TO kopzinski;
+
+--
+-- TOC entry 230 (class 1255 OID 16921)
+-- Name: popula_atendentes(integer); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION popula_atendentes(qtd_atendentes integer) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+declare
+	_codSuperior ATENDENTE.codSuperior%type;
+	_codAtendente ATENDENTE.codAtendente%type;
+	_nomeAtendente ATENDENTE.nome%type;
+
+begin
+
+	select max(codSuperior) as ultimoSuperior into _codSuperior from ATENDENTE where codSuperior = codAtendente;
+	IF _codSuperior is NULL THEN
+		_codSuperior = 1;
+		select get_random_name() into _nomeAtendente;
+		insert into ATENDENTE (codAtendente, codSuperior, nome) values (1, 1, _nomeAtendente);
+	END IF;
+
+
+FOR i IN 1..qtd_atendentes LOOP
+	select nome into _nomeAtendente from nome order by random() limit 1;
+	insert into ATENDENTE (codSuperior, nome) values (_codSuperior, _nomeAtendente);
+END LOOP;
+
+end;
+$$;
+
+
+ALTER FUNCTION public.popula_atendentes(qtd_atendentes integer) OWNER TO kopzinski;
+
+--
+-- TOC entry 239 (class 1255 OID 16937)
+-- Name: popula_hospedagem(integer, date, date); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION popula_hospedagem(qtd_hospedagens integer, data_inicial date, data_final date) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+declare
+	_codHospede HOSPEDE.codHospede%type;
+	_codAtendente ATENDENTE.codAtendente%type;
+	_ultimoNumQuarto HOSPEDAGEM.numQuarto%type = 1;
+	_ultimaDataSaida HOSPEDAGEM.dataSaida%type;
+	_ultimaDataEntrada HOSPEDAGEM.dataEntrada%type = data_inicial;
+	_valorDiaria HOSPEDAGEM.valorDiaria%type = 100.0;
+
+begin
+
+	FOR i IN 1..qtd_hospedagens LOOP
+
+		select (_ultimaDataEntrada + 3) into _ultimaDataSaida;
+
+		select codAtendente into _codAtendente from atendente order by random() limit 1;
+		select codHospede into _codHospede from hospede order by random() limit 1;
+
+		insert into hospedagem (codHospede, codAtendente, dataEntrada, dataSaida, numQuarto, valorDiaria) 
+			values (_codHospede, _codAtendente, _ultimaDataEntrada, _ultimaDataSaida, _ultimoNumQuarto, _valorDiaria);
+
+		IF (_ultimaDataSaida + 3) <= data_final THEN
+			_ultimaDataEntrada := _ultimaDataSaida + 1;	
+		ELSE
+			IF _ultimoNumQuarto = 100 THEN
+				_ultimoNumQuarto := 1;
+			ELSE
+				_ultimoNumQuarto := _ultimoNumQuarto + 1;
+			END IF;
+			_ultimaDataEntrada := data_inicial;
+		END IF;
+		
+	END LOOP;
+
+end;
+$$;
+
+
+ALTER FUNCTION public.popula_hospedagem(qtd_hospedagens integer, data_inicial date, data_final date) OWNER TO kopzinski;
+
+--
+-- TOC entry 229 (class 1255 OID 16920)
+-- Name: popula_hospedes(integer, integer, integer); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION popula_hospedes(qtd_hospedes integer, idade_minima integer, idade_maxima integer) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+declare
+	_nomeCidade CIDADE.nomeCidade%type;
+	_nomeHospede NOME.nome%type;
+	_dataNascimento HOSPEDE.dataNascimento%type;
+
+begin
+
+IF idade_minima >= idade_maxima THEN
+	RAISE EXCEPTION 'Idade minima deve MENOR que a idade maxima.';
+END IF;
+
+IF idade_minima < 18 THEN
+	RAISE EXCEPTION 'Idade minima deve ser maior que 18 anos.';
+END IF;
+IF idade_maxima > 64 THEN
+	RAISE EXCEPTION 'Idade maxima deve ser menor que 65 anos.';
+END IF;
+
+FOR i IN 1..qtd_hospedes LOOP
+
+	select nomeCidade into _nomeCidade from cidade order by random() limit 1;
+	select get_random_name() into _nomeHospede;
+
+	SELECT (CURRENT_DATE - 368 * get_random_number(idade_minima, idade_maxima)) into _dataNascimento; 
+
+	insert into hospede (nome, cidade, dataNascimento) values (_nomeHospede, _nomeCidade, _dataNascimento);
+
+END LOOP;
+
+end;
+$$;
+
+
+ALTER FUNCTION public.popula_hospedes(qtd_hospedes integer, idade_minima integer, idade_maxima integer) OWNER TO kopzinski;
+
+--
+-- TOC entry 235 (class 1255 OID 16785)
+-- Name: retorna_linhas(); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION retorna_linhas() RETURNS SETOF record
+    LANGUAGE plpgsql
+    AS $$ 
+DECLARE 
+	result    RECORD; 
+
+-- Variavel que armazenará o retorno da query 
+BEGIN 
+-- Vamos criar o LOOP para retornar a execução da query na tabela cadastro 
+FOR result in select  
+			ex_categoria.idCategoria as idCategoria,		
+			--to_char(ex_multa.data, 'MM/YYYY') as mesano,		
+			ex_multa.data as data,
+			sum(valor) as somaValor,		
+			sum(pontos) as somaPontos		
+		from ex_categoria, ex_multa		
+		where		
+			ex_categoria.idCategoria = ex_multa.idCategoria		
+		group by ex_categoria.idCategoria, ex_multa.data  LOOP 
+-- O retorno de cada linha 
+RETURN NEXT result; 
+END LOOP; 
+RETURN; 
+END; 
+$$;
+
+
+ALTER FUNCTION public.retorna_linhas() OWNER TO kopzinski;
+
+--
+-- TOC entry 234 (class 1255 OID 16823)
+-- Name: totalizador(); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION totalizador() RETURNS SETOF record
+    LANGUAGE plpgsql
+    AS $$ 
+declare 
+	result    record; 
+begin 
+for result in select  
+			ex_categoria.idcategoria as idcategoria,		
+			to_char(ex_multa.data, 'MM/YYYY') as mesano,		
+			sum(valor) as somavalor,		
+			sum(pontos) as somapontos		
+		from ex_categoria, ex_multa		
+		where		
+			ex_categoria.idcategoria = ex_multa.idcategoria		
+		group by ex_categoria.idcategoria, ex_multa.data  loop 
+return next result; 
+end loop; 
+return; 
+end; 
+$$;
+
+
+ALTER FUNCTION public.totalizador() OWNER TO kopzinski;
+
+--
+-- TOC entry 236 (class 1255 OID 16824)
+-- Name: totalizador_categoria(); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION totalizador_categoria() RETURNS SETOF record
+    LANGUAGE plpgsql
+    AS $$ 
+declare 
+	result    record; 
+begin 
+for result in 
+	select ex_sub.idCategoria subIdCategoria, sum(ex_sub.somapontos) subSomaPontos, sum(ex_sub.somavalor) subSomaValor from (
+		select idCategoria, mesano, somaPontos, somaValor 
+		from totalizador() as (idCategoria integer, mesano text, somaPontos numeric, somaValor bigint)
+	) as ex_sub
+	group by ex_sub.idCategoria
+
+  loop 
+return next result; 
+end loop; 
+return; 
+end; 
+$$;
+
+
+ALTER FUNCTION public.totalizador_categoria() OWNER TO kopzinski;
+
+--
+-- TOC entry 242 (class 1255 OID 17044)
+-- Name: tr_audit_emp(); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION tr_audit_emp() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+	_maxAntes tr_audit.maxSalAntes%type = 0.0;
+	_maxDepois tr_audit.maxSalDepois%type;
+	-- _salarioInserido tr_sal_emp.sal%type;
+	-- _registroEmp tr_emp%rowtype;
+	-- _empMaxSal tr_emp.maxSal%type;
+	-- _countPeriodosAfetados bigint;
+	-- _promocao_qtd bigint;
+BEGIN
+	_maxDepois := NEW.maxSal;
+
+	IF TG_OP = 'UPDATE' THEN
+		_maxAntes := OLD.maxSal;
+	END IF;
+
+	insert into tr_audit (operacao,maxSalAntes, maxSalDepois) values (TG_OP, _maxAntes, _maxDepois);
+
+	RETURN NEW; 
+END;
+$$;
+
+
+ALTER FUNCTION public.tr_audit_emp() OWNER TO kopzinski;
+
+--
+-- TOC entry 241 (class 1255 OID 17042)
+-- Name: valida_registro_salario_pre(); Type: FUNCTION; Schema: public; Owner: kopzinski
+--
+
+CREATE FUNCTION valida_registro_salario_pre() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+	_salarioInserido tr_sal_emp.sal%type;
+	_registroEmp tr_emp%rowtype;
+	_empMaxSal tr_emp.maxSal%type;
+	_countPeriodosAfetados bigint;
+	_promocao_qtd bigint;
+BEGIN
+	
+
+	IF NEW.idEmp IS NULL THEN
+		RAISE EXCEPTION 'Nao foi informado o id do empregrado';
+	END IF;
+
+	--select * into _registroEmp from tr_emp where idEmp = NEW.idEmp;
+	select maxSal into _empMaxSal from tr_emp where idEmp = NEW.idEmp;
+
+	IF NEW.sal > _empMaxSal THEN
+		RAISE EXCEPTION 'Novo salario nao pode ser maior que o permitido para o funcionario';
+	END IF;	
+
+	select count(*) into _countPeriodosAfetados from tr_sal_emp where NEW.dtIni <= tr_sal_emp.dtFim and NEW.dtIni >= tr_sal_emp.dtIni;
+
+	IF _countPeriodosAfetados > 0 THEN
+		RAISE EXCEPTION 'Ja existe registro para periodo informado';
+	END IF;		
+
+	IF TG_OP = 'UPDATE' THEN
+		NEW.usu_atu := CURRENT_USER;
+		NEW.dth_atu := CURRENT_TIMESTAMP;
+	END IF;
+
+	IF TG_OP = 'INSERT' THEN
+		NEW.usu_inc := CURRENT_USER;
+		NEW.dth_inc := CURRENT_TIMESTAMP;
+	END IF;	
+
+	--TODO: trabalhar com ANOMES e nao somente MES (refactoring to after...)
+	select count(*) into _promocao_qtd from tr_promovido where extract(month from CURRENT_DATE) = tr_promovido.anoMes; 
+	IF _promocao_qtd = 0 THEN
+		insert into tr_promovido (anoMes, qtd) values (extract(month from CURRENT_DATE), 1);
+	ELSE
+		update tr_promovido set qtd = (_promocao_qtd + 1) where tr_promovido.anoMes = extract(month from CURRENT_DATE);
+	END IF;
+
+	RETURN NEW; 
+END;
+$$;
+
+
+ALTER FUNCTION public.valida_registro_salario_pre() OWNER TO kopzinski;
+
+SET default_tablespace = '';
+
+SET default_with_oids = false;
+
+--
+-- TOC entry 200 (class 1259 OID 16899)
+-- Name: _codsuperior; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE _codsuperior (
+    ultimosuperior integer
+);
+
+
+ALTER TABLE _codsuperior OWNER TO kopzinski;
+
+--
+-- TOC entry 204 (class 1259 OID 16986)
+-- Name: antropometria; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE antropometria (
+    id integer NOT NULL,
+    idade integer,
+    peso numeric(9,2) NOT NULL,
+    data date NOT NULL,
+    musculo numeric(9,2),
+    gordura numeric(9,2),
+    agua numeric(9,2),
+    osso numeric(9,2),
+    idatleta integer
+);
+
+
+ALTER TABLE antropometria OWNER TO kopzinski;
+
+--
+-- TOC entry 203 (class 1259 OID 16984)
+-- Name: antropometria_id_seq; Type: SEQUENCE; Schema: public; Owner: kopzinski
+--
+
+CREATE SEQUENCE antropometria_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE antropometria_id_seq OWNER TO kopzinski;
+
+--
+-- TOC entry 2548 (class 0 OID 0)
+-- Dependencies: 203
+-- Name: antropometria_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: kopzinski
+--
+
+ALTER SEQUENCE antropometria_id_seq OWNED BY antropometria.id;
+
+
+--
+-- TOC entry 192 (class 1259 OID 16836)
+-- Name: atendente; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE atendente (
+    codatendente integer NOT NULL,
+    codsuperior integer NOT NULL,
+    nome character varying(50)
+);
+
+
+ALTER TABLE atendente OWNER TO kopzinski;
+
+--
+-- TOC entry 191 (class 1259 OID 16834)
+-- Name: atendente_codatendente_seq; Type: SEQUENCE; Schema: public; Owner: kopzinski
+--
+
+CREATE SEQUENCE atendente_codatendente_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE atendente_codatendente_seq OWNER TO kopzinski;
+
+--
+-- TOC entry 2549 (class 0 OID 0)
+-- Dependencies: 191
+-- Name: atendente_codatendente_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: kopzinski
+--
+
+ALTER SEQUENCE atendente_codatendente_seq OWNED BY atendente.codatendente;
+
+
+--
+-- TOC entry 202 (class 1259 OID 16978)
+-- Name: atleta; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE atleta (
+    id integer NOT NULL,
+    nome character varying(100) NOT NULL,
+    nascimento date NOT NULL
+);
+
+
+ALTER TABLE atleta OWNER TO kopzinski;
+
+--
+-- TOC entry 201 (class 1259 OID 16976)
+-- Name: atleta_id_seq; Type: SEQUENCE; Schema: public; Owner: kopzinski
+--
+
+CREATE SEQUENCE atleta_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE atleta_id_seq OWNER TO kopzinski;
+
+--
+-- TOC entry 2550 (class 0 OID 0)
+-- Dependencies: 201
+-- Name: atleta_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: kopzinski
+--
+
+ALTER SEQUENCE atleta_id_seq OWNED BY atleta.id;
+
+
+--
+-- TOC entry 196 (class 1259 OID 16873)
+-- Name: cidade; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE cidade (
+    nomecidade character varying(50) NOT NULL
+);
+
+
+ALTER TABLE cidade OWNER TO kopzinski;
+
+--
+-- TOC entry 195 (class 1259 OID 16868)
+-- Name: cidades; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE cidades (
+    nomecidade character varying(50) NOT NULL
+);
+
+
+ALTER TABLE cidades OWNER TO kopzinski;
+
+--
+-- TOC entry 172 (class 1259 OID 16385)
+-- Name: construtora; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE construtora (
+    cod_const character(10) NOT NULL,
+    cgc character(20) NOT NULL,
+    nome_const character(30) NOT NULL
+);
+
+
+ALTER TABLE construtora OWNER TO kopzinski;
+
+--
+-- TOC entry 199 (class 1259 OID 16889)
+-- Name: employee; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE employee (
+    id integer NOT NULL,
+    first_name character varying(20) DEFAULT NULL::character varying,
+    last_name character varying(20) DEFAULT NULL::character varying,
+    salary integer
+);
+
+
+ALTER TABLE employee OWNER TO kopzinski;
+
+--
+-- TOC entry 173 (class 1259 OID 16392)
+-- Name: engenheiro; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE engenheiro (
+    crea character(8) NOT NULL,
+    cpf character(11) NOT NULL,
+    nome_eng character(30) NOT NULL,
+    area_atuacao character(20) NOT NULL
+);
+
+
+ALTER TABLE engenheiro OWNER TO kopzinski;
+
+--
+-- TOC entry 185 (class 1259 OID 16796)
+-- Name: ex_categoria; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE ex_categoria (
+    idcategoria integer NOT NULL,
+    descricao character varying(20) NOT NULL,
+    iniciofaixavelocidade numeric(5,2) NOT NULL,
+    finalfaixavelocidade numeric(5,2),
+    valor numeric(9,2) NOT NULL,
+    pontos integer NOT NULL
+);
+
+
+ALTER TABLE ex_categoria OWNER TO kopzinski;
+
+--
+-- TOC entry 184 (class 1259 OID 16794)
+-- Name: ex_categoria_idcategoria_seq; Type: SEQUENCE; Schema: public; Owner: kopzinski
+--
+
+CREATE SEQUENCE ex_categoria_idcategoria_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE ex_categoria_idcategoria_seq OWNER TO kopzinski;
+
+--
+-- TOC entry 2551 (class 0 OID 0)
+-- Dependencies: 184
+-- Name: ex_categoria_idcategoria_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: kopzinski
+--
+
+ALTER SEQUENCE ex_categoria_idcategoria_seq OWNED BY ex_categoria.idcategoria;
+
+
+--
+-- TOC entry 183 (class 1259 OID 16789)
+-- Name: ex_motorista; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE ex_motorista (
+    cnh character(5) NOT NULL,
+    nome character varying(20) NOT NULL,
+    totalmultas numeric(9,2)
+);
+
+
+ALTER TABLE ex_motorista OWNER TO kopzinski;
+
+--
+-- TOC entry 188 (class 1259 OID 16806)
+-- Name: ex_multa; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE ex_multa (
+    id integer NOT NULL,
+    cnh character(5) NOT NULL,
+    idcategoria integer NOT NULL,
+    velocidadeapurada numeric(5,2) NOT NULL,
+    data date NOT NULL,
+    velocidadecalculada numeric(5,2)
+);
+
+
+ALTER TABLE ex_multa OWNER TO kopzinski;
+
+--
+-- TOC entry 186 (class 1259 OID 16802)
+-- Name: ex_multa_id_seq; Type: SEQUENCE; Schema: public; Owner: kopzinski
+--
+
+CREATE SEQUENCE ex_multa_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE ex_multa_id_seq OWNER TO kopzinski;
+
+--
+-- TOC entry 2552 (class 0 OID 0)
+-- Dependencies: 186
+-- Name: ex_multa_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: kopzinski
+--
+
+ALTER SEQUENCE ex_multa_id_seq OWNED BY ex_multa.id;
+
+
+--
+-- TOC entry 187 (class 1259 OID 16804)
+-- Name: ex_multa_idcategoria_seq; Type: SEQUENCE; Schema: public; Owner: kopzinski
+--
+
+CREATE SEQUENCE ex_multa_idcategoria_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE ex_multa_idcategoria_seq OWNER TO kopzinski;
+
+--
+-- TOC entry 2553 (class 0 OID 0)
+-- Dependencies: 187
+-- Name: ex_multa_idcategoria_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: kopzinski
+--
+
+ALTER SEQUENCE ex_multa_idcategoria_seq OWNED BY ex_multa.idcategoria;
+
+
+--
+-- TOC entry 194 (class 1259 OID 16850)
+-- Name: hospedagem; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE hospedagem (
+    codhospedagem integer NOT NULL,
+    codatendente integer NOT NULL,
+    codhospede integer NOT NULL,
+    dataentrada date,
+    datasaida date,
+    numquarto integer,
+    valordiaria numeric(9,2)
+);
+
+
+ALTER TABLE hospedagem OWNER TO kopzinski;
+
+--
+-- TOC entry 193 (class 1259 OID 16848)
+-- Name: hospedagem_codhospedagem_seq; Type: SEQUENCE; Schema: public; Owner: kopzinski
+--
+
+CREATE SEQUENCE hospedagem_codhospedagem_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE hospedagem_codhospedagem_seq OWNER TO kopzinski;
+
+--
+-- TOC entry 2554 (class 0 OID 0)
+-- Dependencies: 193
+-- Name: hospedagem_codhospedagem_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: kopzinski
+--
+
+ALTER SEQUENCE hospedagem_codhospedagem_seq OWNED BY hospedagem.codhospedagem;
+
+
+--
+-- TOC entry 190 (class 1259 OID 16828)
+-- Name: hospede; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE hospede (
+    codhospede integer NOT NULL,
+    nome character varying(50),
+    cidade character varying(50),
+    datanascimento date
+);
+
+
+ALTER TABLE hospede OWNER TO kopzinski;
+
+--
+-- TOC entry 189 (class 1259 OID 16826)
+-- Name: hospede_codhospede_seq; Type: SEQUENCE; Schema: public; Owner: kopzinski
+--
+
+CREATE SEQUENCE hospede_codhospede_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE hospede_codhospede_seq OWNER TO kopzinski;
+
+--
+-- TOC entry 2555 (class 0 OID 0)
+-- Dependencies: 189
+-- Name: hospede_codhospede_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: kopzinski
+--
+
+ALTER SEQUENCE hospede_codhospede_seq OWNED BY hospede.codhospede;
+
+
+--
+-- TOC entry 197 (class 1259 OID 16878)
+-- Name: nome; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE nome (
+    nome character varying(50) NOT NULL
+);
+
+
+ALTER TABLE nome OWNER TO kopzinski;
+
+--
+-- TOC entry 174 (class 1259 OID 16399)
+-- Name: obra; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE obra (
+    cod_obra integer NOT NULL,
+    nome_obra character(30) NOT NULL,
+    localizacao character(50) NOT NULL,
+    tipo character(15) NOT NULL,
+    cod_const character(10) NOT NULL,
+    cod_eng_resp character(8) NOT NULL
+);
+
+
+ALTER TABLE obra OWNER TO kopzinski;
+
+--
+-- TOC entry 176 (class 1259 OID 16419)
+-- Name: obra_operario; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE obra_operario (
+    cod_obra integer NOT NULL,
+    cart_trab character(15) NOT NULL,
+    data date NOT NULL,
+    atividades character(200)
+);
+
+
+ALTER TABLE obra_operario OWNER TO kopzinski;
+
+--
+-- TOC entry 175 (class 1259 OID 16414)
+-- Name: operario; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE operario (
+    cart_trab character(15) NOT NULL,
+    nomeop character(30) NOT NULL,
+    endereco character(50) NOT NULL,
+    telefone character(20)
+);
+
+
+ALTER TABLE operario OWNER TO kopzinski;
+
+--
+-- TOC entry 177 (class 1259 OID 16434)
+-- Name: operario_construtora; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE operario_construtora (
+    cart_trab character(15) NOT NULL,
+    cod_const character(10) NOT NULL
+);
+
+
+ALTER TABLE operario_construtora OWNER TO kopzinski;
+
+--
+-- TOC entry 198 (class 1259 OID 16883)
+-- Name: sobrenome; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE sobrenome (
+    sobrenome character varying(50) NOT NULL
+);
+
+
+ALTER TABLE sobrenome OWNER TO kopzinski;
+
+--
+-- TOC entry 209 (class 1259 OID 17033)
+-- Name: tr_audit; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE tr_audit (
+    idaudit integer NOT NULL,
+    operacao character varying(6) NOT NULL,
+    usuario character varying(20) DEFAULT "current_user"() NOT NULL,
+    datahora timestamp without time zone DEFAULT now() NOT NULL,
+    maxsalantes numeric(9,2),
+    maxsaldepois numeric(9,2)
+);
+
+
+ALTER TABLE tr_audit OWNER TO kopzinski;
+
+--
+-- TOC entry 208 (class 1259 OID 17031)
+-- Name: tr_audit_idaudit_seq; Type: SEQUENCE; Schema: public; Owner: kopzinski
+--
+
+CREATE SEQUENCE tr_audit_idaudit_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER TABLE tr_audit_idaudit_seq OWNER TO kopzinski;
+
+--
+-- TOC entry 2556 (class 0 OID 0)
+-- Dependencies: 208
+-- Name: tr_audit_idaudit_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: kopzinski
+--
+
+ALTER SEQUENCE tr_audit_idaudit_seq OWNED BY tr_audit.idaudit;
+
+
+--
+-- TOC entry 205 (class 1259 OID 17000)
+-- Name: tr_emp; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE tr_emp (
+    idemp integer NOT NULL,
+    nome character varying(50) NOT NULL,
+    maxsal numeric(9,2) NOT NULL,
+    dth_inc timestamp without time zone,
+    usu_inc character varying(20),
+    dth_atu timestamp without time zone,
+    usu_atu character varying(20),
+    CONSTRAINT tr_emp_maxsal_check CHECK ((maxsal > (0)::numeric))
+);
+
+
+ALTER TABLE tr_emp OWNER TO kopzinski;
+
+--
+-- TOC entry 207 (class 1259 OID 17017)
+-- Name: tr_promovido; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE tr_promovido (
+    anomes integer NOT NULL,
+    qtd integer,
+    CONSTRAINT tr_promovido_qtd_check CHECK ((qtd > 0))
+);
+
+
+ALTER TABLE tr_promovido OWNER TO kopzinski;
+
+--
+-- TOC entry 206 (class 1259 OID 17006)
+-- Name: tr_sal_emp; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE tr_sal_emp (
+    idsal_emp integer NOT NULL,
+    idemp integer NOT NULL,
+    dtini date NOT NULL,
+    dtfim date,
+    sal numeric(9,2) NOT NULL,
+    usu_inc character varying(20),
+    dth_inc timestamp without time zone,
+    usu_atu character varying(20),
+    dth_atu timestamp without time zone,
+    CONSTRAINT tr_sal_emp_check CHECK ((dtfim > dtini))
+);
+
+
+ALTER TABLE tr_sal_emp OWNER TO kopzinski;
+
+--
+-- TOC entry 179 (class 1259 OID 16519)
+-- Name: xcliente; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE xcliente (
+    codcliente integer NOT NULL,
+    cliente character varying(50) NOT NULL,
+    cpf character(11) NOT NULL,
+    endereco character(30) NOT NULL
+);
+
+
+ALTER TABLE xcliente OWNER TO kopzinski;
+
+--
+-- TOC entry 182 (class 1259 OID 16544)
+-- Name: xitensvenda; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE xitensvenda (
+    nnf integer NOT NULL,
+    dtvenda date NOT NULL,
+    codproduto integer NOT NULL,
+    qtde double precision NOT NULL
+);
+
+
+ALTER TABLE xitensvenda OWNER TO kopzinski;
+
+--
+-- TOC entry 178 (class 1259 OID 16514)
+-- Name: xproduto; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE xproduto (
+    codproduto integer NOT NULL,
+    descricaoproduto character varying(50) NOT NULL,
+    unidade character(2) NOT NULL,
+    preco double precision NOT NULL
+);
+
+
+ALTER TABLE xproduto OWNER TO kopzinski;
+
+--
+-- TOC entry 180 (class 1259 OID 16524)
+-- Name: xtipospagamento; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE xtipospagamento (
+    codtppagamento integer NOT NULL,
+    descricaotppagamento character varying(20) NOT NULL
+);
+
+
+ALTER TABLE xtipospagamento OWNER TO kopzinski;
+
+--
+-- TOC entry 181 (class 1259 OID 16529)
+-- Name: xvenda; Type: TABLE; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE TABLE xvenda (
+    nnf integer NOT NULL,
+    dtvenda date NOT NULL,
+    codcliente integer NOT NULL,
+    codtppagamento integer NOT NULL,
+    vlvenda double precision NOT NULL
+);
+
+
+ALTER TABLE xvenda OWNER TO kopzinski;
+
+--
+-- TOC entry 2304 (class 2604 OID 16989)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY antropometria ALTER COLUMN id SET DEFAULT nextval('antropometria_id_seq'::regclass);
+
+
+--
+-- TOC entry 2299 (class 2604 OID 16839)
+-- Name: codatendente; Type: DEFAULT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY atendente ALTER COLUMN codatendente SET DEFAULT nextval('atendente_codatendente_seq'::regclass);
+
+
+--
+-- TOC entry 2303 (class 2604 OID 16981)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY atleta ALTER COLUMN id SET DEFAULT nextval('atleta_id_seq'::regclass);
+
+
+--
+-- TOC entry 2295 (class 2604 OID 16799)
+-- Name: idcategoria; Type: DEFAULT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY ex_categoria ALTER COLUMN idcategoria SET DEFAULT nextval('ex_categoria_idcategoria_seq'::regclass);
+
+
+--
+-- TOC entry 2296 (class 2604 OID 16809)
+-- Name: id; Type: DEFAULT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY ex_multa ALTER COLUMN id SET DEFAULT nextval('ex_multa_id_seq'::regclass);
+
+
+--
+-- TOC entry 2297 (class 2604 OID 16810)
+-- Name: idcategoria; Type: DEFAULT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY ex_multa ALTER COLUMN idcategoria SET DEFAULT nextval('ex_multa_idcategoria_seq'::regclass);
+
+
+--
+-- TOC entry 2300 (class 2604 OID 16853)
+-- Name: codhospedagem; Type: DEFAULT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY hospedagem ALTER COLUMN codhospedagem SET DEFAULT nextval('hospedagem_codhospedagem_seq'::regclass);
+
+
+--
+-- TOC entry 2298 (class 2604 OID 16831)
+-- Name: codhospede; Type: DEFAULT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY hospede ALTER COLUMN codhospede SET DEFAULT nextval('hospede_codhospede_seq'::regclass);
+
+
+--
+-- TOC entry 2308 (class 2604 OID 17036)
+-- Name: idaudit; Type: DEFAULT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY tr_audit ALTER COLUMN idaudit SET DEFAULT nextval('tr_audit_idaudit_seq'::regclass);
+
+
+--
+-- TOC entry 2530 (class 0 OID 16899)
+-- Dependencies: 200
+-- Data for Name: _codsuperior; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY _codsuperior (ultimosuperior) FROM stdin;
+\N
+\.
+
+
+--
+-- TOC entry 2534 (class 0 OID 16986)
+-- Dependencies: 204
+-- Data for Name: antropometria; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY antropometria (id, idade, peso, data, musculo, gordura, agua, osso, idatleta) FROM stdin;
+2	30	78.30	2015-10-16	\N	\N	\N	\N	3
+3	30	79.10	2015-10-16	\N	\N	\N	\N	3
+4	30	80.50	2015-10-16	\N	\N	\N	\N	3
+5	\N	91.30	2015-10-20	\N	\N	\N	\N	7
+7	34	90.00	2015-10-29	\N	\N	\N	\N	2
+8	87	110.00	2015-10-24	\N	\N	\N	\N	4
+10	\N	63.00	2015-11-05	\N	\N	\N	\N	2
+11	\N	63.00	2015-11-05	\N	\N	\N	\N	2
+6	30	82.00	2015-10-23	10.00	\N	\N	\N	1
+9	\N	80.00	2015-11-05	10.00	\N	\N	\N	1
+12	\N	63.00	2015-11-05	10.00	\N	\N	\N	1
+13	\N	100.00	2015-11-05	\N	\N	\N	\N	1
+\.
+
+
+--
+-- TOC entry 2557 (class 0 OID 0)
+-- Dependencies: 203
+-- Name: antropometria_id_seq; Type: SEQUENCE SET; Schema: public; Owner: kopzinski
+--
+
+SELECT pg_catalog.setval('antropometria_id_seq', 4, true);
+
+
+--
+-- TOC entry 2522 (class 0 OID 16836)
+-- Dependencies: 192
+-- Data for Name: atendente; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY atendente (codatendente, codsuperior, nome) FROM stdin;
+1	1	VERONICA
+3	1	LUIGI
+4	1	PAULO
+5	1	LUIGI
+6	1	WINNIE
+7	1	SAMANTA
+8	1	EDDIE
+9	1	EDDIE
+10	1	EDDIE
+11	1	PAULO
+12	1	TULIPA
+\.
+
+
+--
+-- TOC entry 2558 (class 0 OID 0)
+-- Dependencies: 191
+-- Name: atendente_codatendente_seq; Type: SEQUENCE SET; Schema: public; Owner: kopzinski
+--
+
+SELECT pg_catalog.setval('atendente_codatendente_seq', 12, true);
+
+
+--
+-- TOC entry 2532 (class 0 OID 16978)
+-- Dependencies: 202
+-- Data for Name: atleta; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY atleta (id, nome, nascimento) FROM stdin;
+1	Paulo Mello	1985-06-10
+2	Winnie Mello	1987-07-02
+3	Guilherme Machado	1980-08-20
+4	Paula Veronica	1980-04-15
+0	paulo teste 1	2015-10-20
+5	paulo teste 1	2015-10-20
+6	paulo teste 1	2015-10-20
+7	paulo teste 1	2015-10-20
+8	jose silva	1985-06-09
+9	aaa aaa	1985-06-10
+10	bob bbb	1985-06-20
+\.
+
+
+--
+-- TOC entry 2559 (class 0 OID 0)
+-- Dependencies: 201
+-- Name: atleta_id_seq; Type: SEQUENCE SET; Schema: public; Owner: kopzinski
+--
+
+SELECT pg_catalog.setval('atleta_id_seq', 4, true);
+
+
+--
+-- TOC entry 2526 (class 0 OID 16873)
+-- Dependencies: 196
+-- Data for Name: cidade; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY cidade (nomecidade) FROM stdin;
+ARARANGUA
+ALVORADA
+ALEGRETE
+MONTENEGRO
+MARAU
+MOSTARDAS
+URUGUAIANA
+ITAQUI
+TAPES
+VIAMAO
+\.
+
+
+--
+-- TOC entry 2525 (class 0 OID 16868)
+-- Dependencies: 195
+-- Data for Name: cidades; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY cidades (nomecidade) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2502 (class 0 OID 16385)
+-- Dependencies: 172
+-- Data for Name: construtora; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY construtora (cod_const, cgc, nome_const) FROM stdin;
+c1        	12365423512489      	Encol                         
+c2        	78874529890133      	Goldzstein                    
+c3        	89083484166739      	A3                            
+c4        	87294592979871      	Metaplan                      
+\.
+
+
+--
+-- TOC entry 2529 (class 0 OID 16889)
+-- Dependencies: 199
+-- Data for Name: employee; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY employee (id, first_name, last_name, salary) FROM stdin;
+\.
+
+
+--
+-- TOC entry 2503 (class 0 OID 16392)
+-- Dependencies: 173
+-- Data for Name: engenheiro; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY engenheiro (crea, cpf, nome_eng, area_atuacao) FROM stdin;
+e1      	5637279211 	Luis Silva                    	Edificacao          
+e2      	73941939815	Carlos Alvarez                	Pontes/Viadutos     
+e3      	89058348193	Maria Souza                   	Pontes/Viadutos     
+e4      	83489347851	Jose Silva                    	Edificacao          
+\.
+
+
+--
+-- TOC entry 2515 (class 0 OID 16796)
+-- Dependencies: 185
+-- Data for Name: ex_categoria; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY ex_categoria (idcategoria, descricao, iniciofaixavelocidade, finalfaixavelocidade, valor, pontos) FROM stdin;
+1	categoria 1	80.01	110.00	120.00	20
+2	categoria 2	110.01	140.00	350.00	40
+3	categoria 3	140.00	999.00	680.00	60
+\.
+
+
+--
+-- TOC entry 2560 (class 0 OID 0)
+-- Dependencies: 184
+-- Name: ex_categoria_idcategoria_seq; Type: SEQUENCE SET; Schema: public; Owner: kopzinski
+--
+
+SELECT pg_catalog.setval('ex_categoria_idcategoria_seq', 3, true);
+
+
+--
+-- TOC entry 2513 (class 0 OID 16789)
+-- Dependencies: 183
+-- Data for Name: ex_motorista; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY ex_motorista (cnh, nome, totalmultas) FROM stdin;
+345AB	Kopzinski	0.00
+456C 	Mello	0.00
+123A 	Paulo	1150.00
+234B 	Eduardo	700.00
+\.
+
+
+--
+-- TOC entry 2518 (class 0 OID 16806)
+-- Dependencies: 188
+-- Data for Name: ex_multa; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY ex_multa (id, cnh, idcategoria, velocidadeapurada, data, velocidadecalculada) FROM stdin;
+1	123A 	2	130.00	2015-08-30	117.00
+2	123A 	1	90.00	2015-08-30	81.00
+3	123A 	3	200.00	2015-08-30	180.00
+4	234B 	2	130.00	2015-08-30	117.00
+5	234B 	2	130.00	2015-08-30	117.00
+\.
+
+
+--
+-- TOC entry 2561 (class 0 OID 0)
+-- Dependencies: 186
+-- Name: ex_multa_id_seq; Type: SEQUENCE SET; Schema: public; Owner: kopzinski
+--
+
+SELECT pg_catalog.setval('ex_multa_id_seq', 5, true);
+
+
+--
+-- TOC entry 2562 (class 0 OID 0)
+-- Dependencies: 187
+-- Name: ex_multa_idcategoria_seq; Type: SEQUENCE SET; Schema: public; Owner: kopzinski
+--
+
+SELECT pg_catalog.setval('ex_multa_idcategoria_seq', 1, false);
+
+
+--
+-- TOC entry 2524 (class 0 OID 16850)
+-- Dependencies: 194
+-- Data for Name: hospedagem; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY hospedagem (codhospedagem, codatendente, codhospede, dataentrada, datasaida, numquarto, valordiaria) FROM stdin;
+386	10	212	2015-10-12	2015-10-15	1	100.00
+387	5	101	2015-10-16	2015-10-19	1	100.00
+388	1	211	2015-10-20	2015-10-23	1	100.00
+389	11	128	2015-10-24	2015-10-27	1	100.00
+390	6	148	2015-10-28	2015-10-31	1	100.00
+391	8	29	2015-11-01	2015-11-04	1	100.00
+392	9	22	2015-11-05	2015-11-08	1	100.00
+393	1	211	2015-11-09	2015-11-12	1	100.00
+394	7	193	2015-11-13	2015-11-16	1	100.00
+395	8	194	2015-11-17	2015-11-20	1	100.00
+396	1	85	2015-11-21	2015-11-24	1	100.00
+397	6	89	2015-11-25	2015-11-28	1	100.00
+398	10	157	2015-11-29	2015-12-02	1	100.00
+399	1	53	2015-12-03	2015-12-06	1	100.00
+400	1	152	2015-12-07	2015-12-10	1	100.00
+401	5	67	2015-12-11	2015-12-14	1	100.00
+402	4	212	2015-12-15	2015-12-18	1	100.00
+403	10	29	2015-12-19	2015-12-22	1	100.00
+404	3	195	2015-12-23	2015-12-26	1	100.00
+405	7	26	2015-12-27	2015-12-30	1	100.00
+406	4	174	2015-12-31	2016-01-03	1	100.00
+407	3	134	2016-01-04	2016-01-07	1	100.00
+408	1	92	2016-01-08	2016-01-11	1	100.00
+409	3	94	2016-01-12	2016-01-15	1	100.00
+410	4	136	2016-01-16	2016-01-19	1	100.00
+411	4	63	2016-01-20	2016-01-23	1	100.00
+412	4	163	2016-01-24	2016-01-27	1	100.00
+413	7	165	2016-01-28	2016-01-31	1	100.00
+414	5	59	2016-02-01	2016-02-04	1	100.00
+415	3	80	2016-02-05	2016-02-08	1	100.00
+416	4	64	2016-02-09	2016-02-12	1	100.00
+417	1	119	2016-02-13	2016-02-16	1	100.00
+418	10	62	2016-02-17	2016-02-20	1	100.00
+419	3	13	2016-02-21	2016-02-24	1	100.00
+420	12	34	2016-02-25	2016-02-28	1	100.00
+421	7	136	2016-02-29	2016-03-03	1	100.00
+422	12	29	2016-03-04	2016-03-07	1	100.00
+423	10	199	2016-03-08	2016-03-11	1	100.00
+424	1	179	2016-03-12	2016-03-15	1	100.00
+425	11	122	2016-03-16	2016-03-19	1	100.00
+426	9	42	2016-03-20	2016-03-23	1	100.00
+427	6	18	2016-03-24	2016-03-27	1	100.00
+428	7	217	2016-03-28	2016-03-31	1	100.00
+429	3	187	2016-04-01	2016-04-04	1	100.00
+430	9	78	2016-04-05	2016-04-08	1	100.00
+431	11	44	2016-04-09	2016-04-12	1	100.00
+432	7	59	2016-04-13	2016-04-16	1	100.00
+433	5	213	2016-04-17	2016-04-20	1	100.00
+434	3	210	2016-04-21	2016-04-24	1	100.00
+435	4	57	2016-04-25	2016-04-28	1	100.00
+436	7	23	2016-04-29	2016-05-02	1	100.00
+437	7	199	2016-05-03	2016-05-06	1	100.00
+438	8	213	2016-05-07	2016-05-10	1	100.00
+439	6	72	2016-05-11	2016-05-14	1	100.00
+440	4	27	2016-05-15	2016-05-18	1	100.00
+441	6	19	2016-05-19	2016-05-22	1	100.00
+442	5	140	2016-05-23	2016-05-26	1	100.00
+443	3	85	2016-05-27	2016-05-30	1	100.00
+444	4	142	2016-05-31	2016-06-03	1	100.00
+445	9	208	2016-06-04	2016-06-07	1	100.00
+446	9	188	2016-06-08	2016-06-11	1	100.00
+447	12	105	2016-06-12	2016-06-15	1	100.00
+448	10	86	2016-06-16	2016-06-19	1	100.00
+449	3	55	2016-06-20	2016-06-23	1	100.00
+450	6	62	2016-06-24	2016-06-27	1	100.00
+451	7	158	2016-06-28	2016-07-01	1	100.00
+452	5	134	2016-07-02	2016-07-05	1	100.00
+453	10	174	2016-07-06	2016-07-09	1	100.00
+454	8	123	2016-07-10	2016-07-13	1	100.00
+455	7	124	2016-07-14	2016-07-17	1	100.00
+456	1	126	2016-07-18	2016-07-21	1	100.00
+457	11	51	2016-07-22	2016-07-25	1	100.00
+458	4	186	2016-07-26	2016-07-29	1	100.00
+459	8	158	2016-07-30	2016-08-02	1	100.00
+460	10	12	2016-08-03	2016-08-06	1	100.00
+461	6	47	2015-10-12	2015-10-15	2	100.00
+462	1	36	2015-10-16	2015-10-19	2	100.00
+463	9	88	2015-10-20	2015-10-23	2	100.00
+464	3	91	2015-10-24	2015-10-27	2	100.00
+465	12	113	2015-10-28	2015-10-31	2	100.00
+466	10	65	2015-11-01	2015-11-04	2	100.00
+467	11	83	2015-11-05	2015-11-08	2	100.00
+468	7	220	2015-11-09	2015-11-12	2	100.00
+469	7	93	2015-11-13	2015-11-16	2	100.00
+470	12	161	2015-11-17	2015-11-20	2	100.00
+471	1	80	2015-11-21	2015-11-24	2	100.00
+472	12	179	2015-11-25	2015-11-28	2	100.00
+473	10	53	2015-11-29	2015-12-02	2	100.00
+474	12	126	2015-12-03	2015-12-06	2	100.00
+475	11	165	2015-12-07	2015-12-10	2	100.00
+476	11	107	2015-12-11	2015-12-14	2	100.00
+477	9	135	2015-12-15	2015-12-18	2	100.00
+478	4	123	2015-12-19	2015-12-22	2	100.00
+479	7	212	2015-12-23	2015-12-26	2	100.00
+480	6	81	2015-12-27	2015-12-30	2	100.00
+481	8	44	2015-12-31	2016-01-03	2	100.00
+482	9	85	2016-01-04	2016-01-07	2	100.00
+483	6	216	2016-01-08	2016-01-11	2	100.00
+484	3	45	2016-01-12	2016-01-15	2	100.00
+485	4	92	2016-01-16	2016-01-19	2	100.00
+486	5	126	2016-01-20	2016-01-23	2	100.00
+487	1	110	2016-01-24	2016-01-27	2	100.00
+488	10	216	2016-01-28	2016-01-31	2	100.00
+489	10	207	2016-02-01	2016-02-04	2	100.00
+490	12	115	2016-02-05	2016-02-08	2	100.00
+491	6	99	2016-02-09	2016-02-12	2	100.00
+492	5	43	2016-02-13	2016-02-16	2	100.00
+493	8	113	2016-02-17	2016-02-20	2	100.00
+494	7	204	2016-02-21	2016-02-24	2	100.00
+495	8	91	2016-02-25	2016-02-28	2	100.00
+496	1	41	2016-02-29	2016-03-03	2	100.00
+497	12	154	2016-03-04	2016-03-07	2	100.00
+498	10	32	2016-03-08	2016-03-11	2	100.00
+499	11	182	2016-03-12	2016-03-15	2	100.00
+500	7	97	2016-03-16	2016-03-19	2	100.00
+501	12	145	2016-03-20	2016-03-23	2	100.00
+502	11	95	2016-03-24	2016-03-27	2	100.00
+503	4	116	2016-03-28	2016-03-31	2	100.00
+504	3	194	2016-04-01	2016-04-04	2	100.00
+505	3	78	2016-04-05	2016-04-08	2	100.00
+506	9	167	2016-04-09	2016-04-12	2	100.00
+507	8	137	2016-04-13	2016-04-16	2	100.00
+508	4	204	2016-04-17	2016-04-20	2	100.00
+509	8	131	2016-04-21	2016-04-24	2	100.00
+510	6	98	2016-04-25	2016-04-28	2	100.00
+511	8	217	2016-04-29	2016-05-02	2	100.00
+512	9	140	2016-05-03	2016-05-06	2	100.00
+513	3	21	2016-05-07	2016-05-10	2	100.00
+514	9	63	2016-05-11	2016-05-14	2	100.00
+515	10	201	2016-05-15	2016-05-18	2	100.00
+516	3	202	2016-05-19	2016-05-22	2	100.00
+517	3	122	2016-05-23	2016-05-26	2	100.00
+518	3	99	2016-05-27	2016-05-30	2	100.00
+519	4	154	2016-05-31	2016-06-03	2	100.00
+520	3	31	2016-06-04	2016-06-07	2	100.00
+521	12	25	2016-06-08	2016-06-11	2	100.00
+522	9	199	2016-06-12	2016-06-15	2	100.00
+523	12	48	2016-06-16	2016-06-19	2	100.00
+524	4	18	2016-06-20	2016-06-23	2	100.00
+525	7	200	2016-06-24	2016-06-27	2	100.00
+526	5	35	2016-06-28	2016-07-01	2	100.00
+527	10	198	2016-07-02	2016-07-05	2	100.00
+528	7	199	2016-07-06	2016-07-09	2	100.00
+529	11	70	2016-07-10	2016-07-13	2	100.00
+530	7	187	2016-07-14	2016-07-17	2	100.00
+531	8	69	2016-07-18	2016-07-21	2	100.00
+532	5	159	2016-07-22	2016-07-25	2	100.00
+533	1	94	2016-07-26	2016-07-29	2	100.00
+534	9	100	2016-07-30	2016-08-02	2	100.00
+535	3	94	2016-08-03	2016-08-06	2	100.00
+536	8	146	2015-10-12	2015-10-15	3	100.00
+537	8	113	2015-10-16	2015-10-19	3	100.00
+538	8	141	2015-10-20	2015-10-23	3	100.00
+539	9	98	2015-10-24	2015-10-27	3	100.00
+540	8	111	2015-10-28	2015-10-31	3	100.00
+541	12	35	2015-11-01	2015-11-04	3	100.00
+542	6	141	2015-11-05	2015-11-08	3	100.00
+543	10	196	2015-11-09	2015-11-12	3	100.00
+544	12	75	2015-11-13	2015-11-16	3	100.00
+545	4	128	2015-11-17	2015-11-20	3	100.00
+546	4	61	2015-11-21	2015-11-24	3	100.00
+547	7	68	2015-11-25	2015-11-28	3	100.00
+548	5	120	2015-11-29	2015-12-02	3	100.00
+549	3	190	2015-12-03	2015-12-06	3	100.00
+550	4	12	2015-12-07	2015-12-10	3	100.00
+551	10	39	2015-12-11	2015-12-14	3	100.00
+552	11	214	2015-12-15	2015-12-18	3	100.00
+553	7	192	2015-12-19	2015-12-22	3	100.00
+554	8	101	2015-12-23	2015-12-26	3	100.00
+555	10	205	2015-12-27	2015-12-30	3	100.00
+556	12	186	2015-12-31	2016-01-03	3	100.00
+557	5	211	2016-01-04	2016-01-07	3	100.00
+558	6	220	2016-01-08	2016-01-11	3	100.00
+559	7	40	2016-01-12	2016-01-15	3	100.00
+560	3	121	2016-01-16	2016-01-19	3	100.00
+561	3	24	2016-01-20	2016-01-23	3	100.00
+562	5	106	2016-01-24	2016-01-27	3	100.00
+563	6	212	2016-01-28	2016-01-31	3	100.00
+564	9	56	2016-02-01	2016-02-04	3	100.00
+565	8	169	2016-02-05	2016-02-08	3	100.00
+566	4	179	2016-02-09	2016-02-12	3	100.00
+567	9	52	2016-02-13	2016-02-16	3	100.00
+568	12	205	2016-02-17	2016-02-20	3	100.00
+569	1	148	2016-02-21	2016-02-24	3	100.00
+570	12	114	2016-02-25	2016-02-28	3	100.00
+571	10	88	2016-02-29	2016-03-03	3	100.00
+572	1	78	2016-03-04	2016-03-07	3	100.00
+573	10	212	2016-03-08	2016-03-11	3	100.00
+574	5	65	2016-03-12	2016-03-15	3	100.00
+575	9	57	2016-03-16	2016-03-19	3	100.00
+576	7	123	2016-03-20	2016-03-23	3	100.00
+577	9	156	2016-03-24	2016-03-27	3	100.00
+578	7	88	2016-03-28	2016-03-31	3	100.00
+579	7	205	2016-04-01	2016-04-04	3	100.00
+580	6	94	2016-04-05	2016-04-08	3	100.00
+581	6	133	2016-04-09	2016-04-12	3	100.00
+582	12	38	2016-04-13	2016-04-16	3	100.00
+583	10	64	2016-04-17	2016-04-20	3	100.00
+584	6	88	2016-04-21	2016-04-24	3	100.00
+585	8	114	2016-04-25	2016-04-28	3	100.00
+586	5	210	2016-04-29	2016-05-02	3	100.00
+587	11	33	2016-05-03	2016-05-06	3	100.00
+588	9	29	2016-05-07	2016-05-10	3	100.00
+589	10	220	2016-05-11	2016-05-14	3	100.00
+590	9	165	2016-05-15	2016-05-18	3	100.00
+591	12	127	2016-05-19	2016-05-22	3	100.00
+592	10	48	2016-05-23	2016-05-26	3	100.00
+593	12	133	2016-05-27	2016-05-30	3	100.00
+594	12	72	2016-05-31	2016-06-03	3	100.00
+595	3	43	2016-06-04	2016-06-07	3	100.00
+596	11	103	2016-06-08	2016-06-11	3	100.00
+597	10	193	2016-06-12	2016-06-15	3	100.00
+598	9	207	2016-06-16	2016-06-19	3	100.00
+599	5	69	2016-06-20	2016-06-23	3	100.00
+600	4	22	2016-06-24	2016-06-27	3	100.00
+601	6	70	2016-06-28	2016-07-01	3	100.00
+602	7	201	2016-07-02	2016-07-05	3	100.00
+603	1	194	2016-07-06	2016-07-09	3	100.00
+604	3	174	2016-07-10	2016-07-13	3	100.00
+605	8	214	2016-07-14	2016-07-17	3	100.00
+606	11	196	2016-07-18	2016-07-21	3	100.00
+607	8	51	2016-07-22	2016-07-25	3	100.00
+608	8	219	2016-07-26	2016-07-29	3	100.00
+609	4	134	2016-07-30	2016-08-02	3	100.00
+610	5	157	2016-08-03	2016-08-06	3	100.00
+611	4	149	2015-10-12	2015-10-15	4	100.00
+612	7	33	2015-10-16	2015-10-19	4	100.00
+613	12	35	2015-10-20	2015-10-23	4	100.00
+614	4	72	2015-10-24	2015-10-27	4	100.00
+615	12	93	2015-10-28	2015-10-31	4	100.00
+616	8	199	2015-11-01	2015-11-04	4	100.00
+617	5	114	2015-11-05	2015-11-08	4	100.00
+618	5	170	2015-11-09	2015-11-12	4	100.00
+619	8	136	2015-11-13	2015-11-16	4	100.00
+620	7	97	2015-11-17	2015-11-20	4	100.00
+621	6	94	2015-11-21	2015-11-24	4	100.00
+622	12	16	2015-11-25	2015-11-28	4	100.00
+623	7	219	2015-11-29	2015-12-02	4	100.00
+624	11	69	2015-12-03	2015-12-06	4	100.00
+625	1	158	2015-12-07	2015-12-10	4	100.00
+626	10	52	2015-12-11	2015-12-14	4	100.00
+627	3	170	2015-12-15	2015-12-18	4	100.00
+628	9	100	2015-12-19	2015-12-22	4	100.00
+629	6	140	2015-12-23	2015-12-26	4	100.00
+630	6	162	2015-12-27	2015-12-30	4	100.00
+631	6	47	2015-12-31	2016-01-03	4	100.00
+632	11	199	2016-01-04	2016-01-07	4	100.00
+633	3	89	2016-01-08	2016-01-11	4	100.00
+634	7	180	2016-01-12	2016-01-15	4	100.00
+635	3	99	2016-01-16	2016-01-19	4	100.00
+636	4	162	2016-01-20	2016-01-23	4	100.00
+637	10	196	2016-01-24	2016-01-27	4	100.00
+638	4	158	2016-01-28	2016-01-31	4	100.00
+639	12	178	2016-02-01	2016-02-04	4	100.00
+640	11	52	2016-02-05	2016-02-08	4	100.00
+641	11	109	2016-02-09	2016-02-12	4	100.00
+642	4	152	2016-02-13	2016-02-16	4	100.00
+643	12	17	2016-02-17	2016-02-20	4	100.00
+644	9	26	2016-02-21	2016-02-24	4	100.00
+645	9	68	2016-02-25	2016-02-28	4	100.00
+646	11	219	2016-02-29	2016-03-03	4	100.00
+647	12	57	2016-03-04	2016-03-07	4	100.00
+648	5	152	2016-03-08	2016-03-11	4	100.00
+649	12	158	2016-03-12	2016-03-15	4	100.00
+650	8	71	2016-03-16	2016-03-19	4	100.00
+651	10	191	2016-03-20	2016-03-23	4	100.00
+652	6	55	2016-03-24	2016-03-27	4	100.00
+653	12	59	2016-03-28	2016-03-31	4	100.00
+654	4	198	2016-04-01	2016-04-04	4	100.00
+655	5	192	2016-04-05	2016-04-08	4	100.00
+656	12	19	2016-04-09	2016-04-12	4	100.00
+657	9	164	2016-04-13	2016-04-16	4	100.00
+658	3	109	2016-04-17	2016-04-20	4	100.00
+659	10	83	2016-04-21	2016-04-24	4	100.00
+660	9	56	2016-04-25	2016-04-28	4	100.00
+661	3	83	2016-04-29	2016-05-02	4	100.00
+662	8	77	2016-05-03	2016-05-06	4	100.00
+663	7	118	2016-05-07	2016-05-10	4	100.00
+664	12	208	2016-05-11	2016-05-14	4	100.00
+665	9	160	2016-05-15	2016-05-18	4	100.00
+666	3	196	2016-05-19	2016-05-22	4	100.00
+667	8	77	2016-05-23	2016-05-26	4	100.00
+668	12	127	2016-05-27	2016-05-30	4	100.00
+669	6	19	2016-05-31	2016-06-03	4	100.00
+670	6	53	2016-06-04	2016-06-07	4	100.00
+671	9	193	2016-06-08	2016-06-11	4	100.00
+672	6	19	2016-06-12	2016-06-15	4	100.00
+673	1	12	2016-06-16	2016-06-19	4	100.00
+674	9	106	2016-06-20	2016-06-23	4	100.00
+675	5	106	2016-06-24	2016-06-27	4	100.00
+676	7	153	2016-06-28	2016-07-01	4	100.00
+677	8	124	2016-07-02	2016-07-05	4	100.00
+678	4	79	2016-07-06	2016-07-09	4	100.00
+679	8	49	2016-07-10	2016-07-13	4	100.00
+680	5	87	2016-07-14	2016-07-17	4	100.00
+681	8	212	2016-07-18	2016-07-21	4	100.00
+682	11	179	2016-07-22	2016-07-25	4	100.00
+683	4	70	2016-07-26	2016-07-29	4	100.00
+684	8	140	2016-07-30	2016-08-02	4	100.00
+685	7	175	2016-08-03	2016-08-06	4	100.00
+686	3	124	2015-10-12	2015-10-15	5	100.00
+687	12	106	2015-10-16	2015-10-19	5	100.00
+688	11	160	2015-10-20	2015-10-23	5	100.00
+689	7	70	2015-10-24	2015-10-27	5	100.00
+690	1	193	2015-10-28	2015-10-31	5	100.00
+691	12	90	2015-11-01	2015-11-04	5	100.00
+692	3	16	2015-11-05	2015-11-08	5	100.00
+693	8	129	2015-11-09	2015-11-12	5	100.00
+694	5	189	2015-11-13	2015-11-16	5	100.00
+695	8	175	2015-11-17	2015-11-20	5	100.00
+696	4	185	2015-11-21	2015-11-24	5	100.00
+697	7	195	2015-11-25	2015-11-28	5	100.00
+698	4	206	2015-11-29	2015-12-02	5	100.00
+699	8	216	2015-12-03	2015-12-06	5	100.00
+700	11	121	2015-12-07	2015-12-10	5	100.00
+701	11	219	2015-12-11	2015-12-14	5	100.00
+702	12	16	2015-12-15	2015-12-18	5	100.00
+703	3	67	2015-12-19	2015-12-22	5	100.00
+704	7	161	2015-12-23	2015-12-26	5	100.00
+705	12	93	2015-12-27	2015-12-30	5	100.00
+706	7	154	2015-12-31	2016-01-03	5	100.00
+707	5	20	2016-01-04	2016-01-07	5	100.00
+708	7	20	2016-01-08	2016-01-11	5	100.00
+709	8	199	2016-01-12	2016-01-15	5	100.00
+710	7	135	2016-01-16	2016-01-19	5	100.00
+711	4	86	2016-01-20	2016-01-23	5	100.00
+712	5	151	2016-01-24	2016-01-27	5	100.00
+713	6	214	2016-01-28	2016-01-31	5	100.00
+714	7	34	2016-02-01	2016-02-04	5	100.00
+715	1	128	2016-02-05	2016-02-08	5	100.00
+716	11	169	2016-02-09	2016-02-12	5	100.00
+717	1	173	2016-02-13	2016-02-16	5	100.00
+718	8	120	2016-02-17	2016-02-20	5	100.00
+719	10	145	2016-02-21	2016-02-24	5	100.00
+720	5	154	2016-02-25	2016-02-28	5	100.00
+721	7	218	2016-02-29	2016-03-03	5	100.00
+722	1	163	2016-03-04	2016-03-07	5	100.00
+723	5	92	2016-03-08	2016-03-11	5	100.00
+724	7	154	2016-03-12	2016-03-15	5	100.00
+725	1	111	2016-03-16	2016-03-19	5	100.00
+726	10	198	2016-03-20	2016-03-23	5	100.00
+727	8	198	2016-03-24	2016-03-27	5	100.00
+728	10	33	2016-03-28	2016-03-31	5	100.00
+729	5	71	2016-04-01	2016-04-04	5	100.00
+730	6	110	2016-04-05	2016-04-08	5	100.00
+731	6	112	2016-04-09	2016-04-12	5	100.00
+732	6	105	2016-04-13	2016-04-16	5	100.00
+733	11	168	2016-04-17	2016-04-20	5	100.00
+734	10	37	2016-04-21	2016-04-24	5	100.00
+735	12	221	2016-04-25	2016-04-28	5	100.00
+736	3	29	2016-04-29	2016-05-02	5	100.00
+737	10	148	2016-05-03	2016-05-06	5	100.00
+738	7	146	2016-05-07	2016-05-10	5	100.00
+739	8	18	2016-05-11	2016-05-14	5	100.00
+740	8	137	2016-05-15	2016-05-18	5	100.00
+741	10	170	2016-05-19	2016-05-22	5	100.00
+742	1	213	2016-05-23	2016-05-26	5	100.00
+743	9	190	2016-05-27	2016-05-30	5	100.00
+744	6	45	2016-05-31	2016-06-03	5	100.00
+745	11	199	2016-06-04	2016-06-07	5	100.00
+746	8	184	2016-06-08	2016-06-11	5	100.00
+747	9	94	2016-06-12	2016-06-15	5	100.00
+748	4	188	2016-06-16	2016-06-19	5	100.00
+749	11	92	2016-06-20	2016-06-23	5	100.00
+750	8	65	2016-06-24	2016-06-27	5	100.00
+751	7	37	2016-06-28	2016-07-01	5	100.00
+752	8	119	2016-07-02	2016-07-05	5	100.00
+753	11	119	2016-07-06	2016-07-09	5	100.00
+754	5	198	2016-07-10	2016-07-13	5	100.00
+755	11	133	2016-07-14	2016-07-17	5	100.00
+756	6	162	2016-07-18	2016-07-21	5	100.00
+757	1	215	2016-07-22	2016-07-25	5	100.00
+758	7	124	2016-07-26	2016-07-29	5	100.00
+759	9	44	2016-07-30	2016-08-02	5	100.00
+760	7	37	2016-08-03	2016-08-06	5	100.00
+761	6	123	2015-10-12	2015-10-15	6	100.00
+762	10	174	2015-10-16	2015-10-19	6	100.00
+763	11	145	2015-10-20	2015-10-23	6	100.00
+764	9	122	2015-10-24	2015-10-27	6	100.00
+765	7	204	2015-10-28	2015-10-31	6	100.00
+766	12	124	2015-11-01	2015-11-04	6	100.00
+767	6	164	2015-11-05	2015-11-08	6	100.00
+768	9	207	2015-11-09	2015-11-12	6	100.00
+769	6	108	2015-11-13	2015-11-16	6	100.00
+770	7	106	2015-11-17	2015-11-20	6	100.00
+771	3	216	2015-11-21	2015-11-24	6	100.00
+772	8	180	2015-11-25	2015-11-28	6	100.00
+773	5	193	2015-11-29	2015-12-02	6	100.00
+774	7	92	2015-12-03	2015-12-06	6	100.00
+775	12	67	2015-12-07	2015-12-10	6	100.00
+776	8	40	2015-12-11	2015-12-14	6	100.00
+777	5	87	2015-12-15	2015-12-18	6	100.00
+778	3	90	2015-12-19	2015-12-22	6	100.00
+779	9	219	2015-12-23	2015-12-26	6	100.00
+780	11	157	2015-12-27	2015-12-30	6	100.00
+781	5	140	2015-12-31	2016-01-03	6	100.00
+782	5	79	2016-01-04	2016-01-07	6	100.00
+783	8	184	2016-01-08	2016-01-11	6	100.00
+784	10	38	2016-01-12	2016-01-15	6	100.00
+785	10	132	2016-01-16	2016-01-19	6	100.00
+786	12	211	2016-01-20	2016-01-23	6	100.00
+787	11	194	2016-01-24	2016-01-27	6	100.00
+788	11	201	2016-01-28	2016-01-31	6	100.00
+789	10	94	2016-02-01	2016-02-04	6	100.00
+790	10	215	2016-02-05	2016-02-08	6	100.00
+791	12	148	2016-02-09	2016-02-12	6	100.00
+792	6	47	2016-02-13	2016-02-16	6	100.00
+793	11	61	2016-02-17	2016-02-20	6	100.00
+794	8	101	2016-02-21	2016-02-24	6	100.00
+795	12	83	2016-02-25	2016-02-28	6	100.00
+796	10	94	2016-02-29	2016-03-03	6	100.00
+797	1	107	2016-03-04	2016-03-07	6	100.00
+798	8	152	2016-03-08	2016-03-11	6	100.00
+799	10	44	2016-03-12	2016-03-15	6	100.00
+800	1	175	2016-03-16	2016-03-19	6	100.00
+801	5	124	2016-03-20	2016-03-23	6	100.00
+802	5	156	2016-03-24	2016-03-27	6	100.00
+803	6	162	2016-03-28	2016-03-31	6	100.00
+804	4	39	2016-04-01	2016-04-04	6	100.00
+805	3	90	2016-04-05	2016-04-08	6	100.00
+806	3	28	2016-04-09	2016-04-12	6	100.00
+807	11	106	2016-04-13	2016-04-16	6	100.00
+808	4	71	2016-04-17	2016-04-20	6	100.00
+809	4	86	2016-04-21	2016-04-24	6	100.00
+810	6	100	2016-04-25	2016-04-28	6	100.00
+811	12	16	2016-04-29	2016-05-02	6	100.00
+812	12	149	2016-05-03	2016-05-06	6	100.00
+813	5	101	2016-05-07	2016-05-10	6	100.00
+814	7	96	2016-05-11	2016-05-14	6	100.00
+815	3	171	2016-05-15	2016-05-18	6	100.00
+816	11	211	2016-05-19	2016-05-22	6	100.00
+817	12	55	2016-05-23	2016-05-26	6	100.00
+818	5	91	2016-05-27	2016-05-30	6	100.00
+819	5	106	2016-05-31	2016-06-03	6	100.00
+820	12	123	2016-06-04	2016-06-07	6	100.00
+821	6	112	2016-06-08	2016-06-11	6	100.00
+822	3	209	2016-06-12	2016-06-15	6	100.00
+823	9	60	2016-06-16	2016-06-19	6	100.00
+824	5	111	2016-06-20	2016-06-23	6	100.00
+825	10	172	2016-06-24	2016-06-27	6	100.00
+826	3	207	2016-06-28	2016-07-01	6	100.00
+827	11	18	2016-07-02	2016-07-05	6	100.00
+828	3	96	2016-07-06	2016-07-09	6	100.00
+829	6	89	2016-07-10	2016-07-13	6	100.00
+830	11	220	2016-07-14	2016-07-17	6	100.00
+831	8	72	2016-07-18	2016-07-21	6	100.00
+832	4	198	2016-07-22	2016-07-25	6	100.00
+833	5	151	2016-07-26	2016-07-29	6	100.00
+834	4	208	2016-07-30	2016-08-02	6	100.00
+835	9	43	2016-08-03	2016-08-06	6	100.00
+836	7	170	2015-10-12	2015-10-15	7	100.00
+837	9	48	2015-10-16	2015-10-19	7	100.00
+838	11	24	2015-10-20	2015-10-23	7	100.00
+839	11	187	2015-10-24	2015-10-27	7	100.00
+840	7	15	2015-10-28	2015-10-31	7	100.00
+841	1	44	2015-11-01	2015-11-04	7	100.00
+842	5	81	2015-11-05	2015-11-08	7	100.00
+843	8	142	2015-11-09	2015-11-12	7	100.00
+844	1	145	2015-11-13	2015-11-16	7	100.00
+845	9	139	2015-11-17	2015-11-20	7	100.00
+846	3	31	2015-11-21	2015-11-24	7	100.00
+847	11	142	2015-11-25	2015-11-28	7	100.00
+848	6	148	2015-11-29	2015-12-02	7	100.00
+849	3	135	2015-12-03	2015-12-06	7	100.00
+850	9	60	2015-12-07	2015-12-10	7	100.00
+851	6	197	2015-12-11	2015-12-14	7	100.00
+852	1	108	2015-12-15	2015-12-18	7	100.00
+853	10	24	2015-12-19	2015-12-22	7	100.00
+854	6	102	2015-12-23	2015-12-26	7	100.00
+855	1	111	2015-12-27	2015-12-30	7	100.00
+856	11	103	2015-12-31	2016-01-03	7	100.00
+857	6	21	2016-01-04	2016-01-07	7	100.00
+858	4	106	2016-01-08	2016-01-11	7	100.00
+859	4	164	2016-01-12	2016-01-15	7	100.00
+860	12	132	2016-01-16	2016-01-19	7	100.00
+861	11	55	2016-01-20	2016-01-23	7	100.00
+862	12	20	2016-01-24	2016-01-27	7	100.00
+863	5	143	2016-01-28	2016-01-31	7	100.00
+864	4	195	2016-02-01	2016-02-04	7	100.00
+865	4	209	2016-02-05	2016-02-08	7	100.00
+866	5	134	2016-02-09	2016-02-12	7	100.00
+867	1	144	2016-02-13	2016-02-16	7	100.00
+868	1	51	2016-02-17	2016-02-20	7	100.00
+869	12	156	2016-02-21	2016-02-24	7	100.00
+870	1	146	2016-02-25	2016-02-28	7	100.00
+871	7	52	2016-02-29	2016-03-03	7	100.00
+872	1	127	2016-03-04	2016-03-07	7	100.00
+873	4	217	2016-03-08	2016-03-11	7	100.00
+874	7	44	2016-03-12	2016-03-15	7	100.00
+875	3	120	2016-03-16	2016-03-19	7	100.00
+876	8	13	2016-03-20	2016-03-23	7	100.00
+877	7	82	2016-03-24	2016-03-27	7	100.00
+878	9	34	2016-03-28	2016-03-31	7	100.00
+879	6	34	2016-04-01	2016-04-04	7	100.00
+880	7	122	2016-04-05	2016-04-08	7	100.00
+881	7	12	2016-04-09	2016-04-12	7	100.00
+882	11	218	2016-04-13	2016-04-16	7	100.00
+883	7	77	2016-04-17	2016-04-20	7	100.00
+884	7	80	2016-04-21	2016-04-24	7	100.00
+885	12	136	2016-04-25	2016-04-28	7	100.00
+886	12	174	2016-04-29	2016-05-02	7	100.00
+887	11	140	2016-05-03	2016-05-06	7	100.00
+888	3	207	2016-05-07	2016-05-10	7	100.00
+889	5	70	2016-05-11	2016-05-14	7	100.00
+890	1	160	2016-05-15	2016-05-18	7	100.00
+891	6	193	2016-05-19	2016-05-22	7	100.00
+892	9	16	2016-05-23	2016-05-26	7	100.00
+893	11	215	2016-05-27	2016-05-30	7	100.00
+894	7	124	2016-05-31	2016-06-03	7	100.00
+895	11	90	2016-06-04	2016-06-07	7	100.00
+896	4	216	2016-06-08	2016-06-11	7	100.00
+897	11	157	2016-06-12	2016-06-15	7	100.00
+898	10	120	2016-06-16	2016-06-19	7	100.00
+899	9	34	2016-06-20	2016-06-23	7	100.00
+900	4	93	2016-06-24	2016-06-27	7	100.00
+901	5	95	2016-06-28	2016-07-01	7	100.00
+902	12	24	2016-07-02	2016-07-05	7	100.00
+903	3	160	2016-07-06	2016-07-09	7	100.00
+904	12	215	2016-07-10	2016-07-13	7	100.00
+905	11	135	2016-07-14	2016-07-17	7	100.00
+906	3	54	2016-07-18	2016-07-21	7	100.00
+907	8	190	2016-07-22	2016-07-25	7	100.00
+908	6	185	2016-07-26	2016-07-29	7	100.00
+909	12	155	2016-07-30	2016-08-02	7	100.00
+910	6	27	2016-08-03	2016-08-06	7	100.00
+911	8	171	2015-10-12	2015-10-15	8	100.00
+912	10	201	2015-10-16	2015-10-19	8	100.00
+913	4	177	2015-10-20	2015-10-23	8	100.00
+914	3	115	2015-10-24	2015-10-27	8	100.00
+915	11	133	2015-10-28	2015-10-31	8	100.00
+916	5	82	2015-11-01	2015-11-04	8	100.00
+917	5	219	2015-11-05	2015-11-08	8	100.00
+918	3	107	2015-11-09	2015-11-12	8	100.00
+919	10	167	2015-11-13	2015-11-16	8	100.00
+920	3	17	2015-11-17	2015-11-20	8	100.00
+921	9	91	2015-11-21	2015-11-24	8	100.00
+922	12	155	2015-11-25	2015-11-28	8	100.00
+923	12	31	2015-11-29	2015-12-02	8	100.00
+924	6	123	2015-12-03	2015-12-06	8	100.00
+925	9	198	2015-12-07	2015-12-10	8	100.00
+926	6	221	2015-12-11	2015-12-14	8	100.00
+927	1	82	2015-12-15	2015-12-18	8	100.00
+928	12	92	2015-12-19	2015-12-22	8	100.00
+929	7	57	2015-12-23	2015-12-26	8	100.00
+930	12	207	2015-12-27	2015-12-30	8	100.00
+931	10	64	2015-12-31	2016-01-03	8	100.00
+932	11	58	2016-01-04	2016-01-07	8	100.00
+933	1	88	2016-01-08	2016-01-11	8	100.00
+934	8	144	2016-01-12	2016-01-15	8	100.00
+935	12	153	2016-01-16	2016-01-19	8	100.00
+936	8	176	2016-01-20	2016-01-23	8	100.00
+937	4	141	2016-01-24	2016-01-27	8	100.00
+938	10	191	2016-01-28	2016-01-31	8	100.00
+939	11	146	2016-02-01	2016-02-04	8	100.00
+940	6	63	2016-02-05	2016-02-08	8	100.00
+941	7	36	2016-02-09	2016-02-12	8	100.00
+942	10	207	2016-02-13	2016-02-16	8	100.00
+943	9	118	2016-02-17	2016-02-20	8	100.00
+944	5	143	2016-02-21	2016-02-24	8	100.00
+945	10	165	2016-02-25	2016-02-28	8	100.00
+946	10	110	2016-02-29	2016-03-03	8	100.00
+947	3	95	2016-03-04	2016-03-07	8	100.00
+948	5	202	2016-03-08	2016-03-11	8	100.00
+949	4	42	2016-03-12	2016-03-15	8	100.00
+950	11	69	2016-03-16	2016-03-19	8	100.00
+951	6	159	2016-03-20	2016-03-23	8	100.00
+952	12	191	2016-03-24	2016-03-27	8	100.00
+953	4	87	2016-03-28	2016-03-31	8	100.00
+954	5	12	2016-04-01	2016-04-04	8	100.00
+955	7	102	2016-04-05	2016-04-08	8	100.00
+956	8	188	2016-04-09	2016-04-12	8	100.00
+957	7	164	2016-04-13	2016-04-16	8	100.00
+958	11	28	2016-04-17	2016-04-20	8	100.00
+959	12	57	2016-04-21	2016-04-24	8	100.00
+960	11	40	2016-04-25	2016-04-28	8	100.00
+961	12	112	2016-04-29	2016-05-02	8	100.00
+962	6	28	2016-05-03	2016-05-06	8	100.00
+963	12	88	2016-05-07	2016-05-10	8	100.00
+964	10	68	2016-05-11	2016-05-14	8	100.00
+965	9	122	2016-05-15	2016-05-18	8	100.00
+966	10	184	2016-05-19	2016-05-22	8	100.00
+967	7	26	2016-05-23	2016-05-26	8	100.00
+968	4	87	2016-05-27	2016-05-30	8	100.00
+969	6	140	2016-05-31	2016-06-03	8	100.00
+970	4	186	2016-06-04	2016-06-07	8	100.00
+971	6	87	2016-06-08	2016-06-11	8	100.00
+972	5	163	2016-06-12	2016-06-15	8	100.00
+973	3	93	2016-06-16	2016-06-19	8	100.00
+974	11	71	2016-06-20	2016-06-23	8	100.00
+975	3	166	2016-06-24	2016-06-27	8	100.00
+976	11	155	2016-06-28	2016-07-01	8	100.00
+977	11	89	2016-07-02	2016-07-05	8	100.00
+978	3	136	2016-07-06	2016-07-09	8	100.00
+979	11	144	2016-07-10	2016-07-13	8	100.00
+980	10	157	2016-07-14	2016-07-17	8	100.00
+981	4	117	2016-07-18	2016-07-21	8	100.00
+982	6	180	2016-07-22	2016-07-25	8	100.00
+983	8	168	2016-07-26	2016-07-29	8	100.00
+984	9	160	2016-07-30	2016-08-02	8	100.00
+985	11	151	2016-08-03	2016-08-06	8	100.00
+986	11	199	2015-10-12	2015-10-15	9	100.00
+987	3	40	2015-10-16	2015-10-19	9	100.00
+988	3	120	2015-10-20	2015-10-23	9	100.00
+989	9	22	2015-10-24	2015-10-27	9	100.00
+990	5	54	2015-10-28	2015-10-31	9	100.00
+991	3	151	2015-11-01	2015-11-04	9	100.00
+992	7	186	2015-11-05	2015-11-08	9	100.00
+993	9	171	2015-11-09	2015-11-12	9	100.00
+994	7	218	2015-11-13	2015-11-16	9	100.00
+995	7	141	2015-11-17	2015-11-20	9	100.00
+996	11	215	2015-11-21	2015-11-24	9	100.00
+997	8	115	2015-11-25	2015-11-28	9	100.00
+998	7	145	2015-11-29	2015-12-02	9	100.00
+999	10	48	2015-12-03	2015-12-06	9	100.00
+1000	11	167	2015-12-07	2015-12-10	9	100.00
+1001	10	192	2015-12-11	2015-12-14	9	100.00
+1002	8	218	2015-12-15	2015-12-18	9	100.00
+1003	6	92	2015-12-19	2015-12-22	9	100.00
+1004	11	108	2015-12-23	2015-12-26	9	100.00
+1005	10	176	2015-12-27	2015-12-30	9	100.00
+1006	9	142	2015-12-31	2016-01-03	9	100.00
+1007	10	150	2016-01-04	2016-01-07	9	100.00
+1008	1	206	2016-01-08	2016-01-11	9	100.00
+1009	5	157	2016-01-12	2016-01-15	9	100.00
+1010	8	220	2016-01-16	2016-01-19	9	100.00
+1011	6	153	2016-01-20	2016-01-23	9	100.00
+1012	8	220	2016-01-24	2016-01-27	9	100.00
+1013	5	154	2016-01-28	2016-01-31	9	100.00
+1014	3	111	2016-02-01	2016-02-04	9	100.00
+1015	5	186	2016-02-05	2016-02-08	9	100.00
+1016	9	102	2016-02-09	2016-02-12	9	100.00
+1017	5	127	2016-02-13	2016-02-16	9	100.00
+1018	12	45	2016-02-17	2016-02-20	9	100.00
+1019	4	30	2016-02-21	2016-02-24	9	100.00
+1020	6	68	2016-02-25	2016-02-28	9	100.00
+1021	10	101	2016-02-29	2016-03-03	9	100.00
+1022	3	218	2016-03-04	2016-03-07	9	100.00
+1023	11	141	2016-03-08	2016-03-11	9	100.00
+1024	5	92	2016-03-12	2016-03-15	9	100.00
+1025	4	218	2016-03-16	2016-03-19	9	100.00
+1026	3	90	2016-03-20	2016-03-23	9	100.00
+1027	6	66	2016-03-24	2016-03-27	9	100.00
+1028	10	81	2016-03-28	2016-03-31	9	100.00
+1029	6	67	2016-04-01	2016-04-04	9	100.00
+1030	1	43	2016-04-05	2016-04-08	9	100.00
+1031	10	33	2016-04-09	2016-04-12	9	100.00
+1032	6	154	2016-04-13	2016-04-16	9	100.00
+1033	5	102	2016-04-17	2016-04-20	9	100.00
+1034	7	173	2016-04-21	2016-04-24	9	100.00
+1035	11	140	2016-04-25	2016-04-28	9	100.00
+1036	4	166	2016-04-29	2016-05-02	9	100.00
+1037	4	39	2016-05-03	2016-05-06	9	100.00
+1038	4	65	2016-05-07	2016-05-10	9	100.00
+1039	10	170	2016-05-11	2016-05-14	9	100.00
+1040	10	205	2016-05-15	2016-05-18	9	100.00
+1041	9	24	2016-05-19	2016-05-22	9	100.00
+1042	3	185	2016-05-23	2016-05-26	9	100.00
+1043	3	153	2016-05-27	2016-05-30	9	100.00
+1044	7	25	2016-05-31	2016-06-03	9	100.00
+1045	12	149	2016-06-04	2016-06-07	9	100.00
+1046	4	95	2016-06-08	2016-06-11	9	100.00
+1047	8	168	2016-06-12	2016-06-15	9	100.00
+1048	7	206	2016-06-16	2016-06-19	9	100.00
+1049	10	83	2016-06-20	2016-06-23	9	100.00
+1050	8	125	2016-06-24	2016-06-27	9	100.00
+1051	5	54	2016-06-28	2016-07-01	9	100.00
+1052	10	142	2016-07-02	2016-07-05	9	100.00
+1053	11	175	2016-07-06	2016-07-09	9	100.00
+1054	7	131	2016-07-10	2016-07-13	9	100.00
+1055	6	77	2016-07-14	2016-07-17	9	100.00
+1056	5	32	2016-07-18	2016-07-21	9	100.00
+1057	8	120	2016-07-22	2016-07-25	9	100.00
+1058	4	52	2016-07-26	2016-07-29	9	100.00
+1059	3	143	2016-07-30	2016-08-02	9	100.00
+1060	5	92	2016-08-03	2016-08-06	9	100.00
+1061	7	127	2015-10-12	2015-10-15	10	100.00
+1062	5	23	2015-10-16	2015-10-19	10	100.00
+1063	4	104	2015-10-20	2015-10-23	10	100.00
+1064	12	205	2015-10-24	2015-10-27	10	100.00
+1065	8	31	2015-10-28	2015-10-31	10	100.00
+1066	3	142	2015-11-01	2015-11-04	10	100.00
+1067	11	12	2015-11-05	2015-11-08	10	100.00
+1068	4	206	2015-11-09	2015-11-12	10	100.00
+1069	4	150	2015-11-13	2015-11-16	10	100.00
+1070	6	15	2015-11-17	2015-11-20	10	100.00
+1071	10	92	2015-11-21	2015-11-24	10	100.00
+1072	6	198	2015-11-25	2015-11-28	10	100.00
+1073	5	133	2015-11-29	2015-12-02	10	100.00
+1074	9	13	2015-12-03	2015-12-06	10	100.00
+1075	7	28	2015-12-07	2015-12-10	10	100.00
+1076	1	42	2015-12-11	2015-12-14	10	100.00
+1077	7	96	2015-12-15	2015-12-18	10	100.00
+1078	11	126	2015-12-19	2015-12-22	10	100.00
+1079	8	163	2015-12-23	2015-12-26	10	100.00
+1080	5	197	2015-12-27	2015-12-30	10	100.00
+1081	7	78	2015-12-31	2016-01-03	10	100.00
+1082	12	39	2016-01-04	2016-01-07	10	100.00
+1083	3	61	2016-01-08	2016-01-11	10	100.00
+1084	4	24	2016-01-12	2016-01-15	10	100.00
+1085	4	194	2016-01-16	2016-01-19	10	100.00
+1086	6	83	2016-01-20	2016-01-23	10	100.00
+1087	6	14	2016-01-24	2016-01-27	10	100.00
+1088	11	165	2016-01-28	2016-01-31	10	100.00
+1089	1	135	2016-02-01	2016-02-04	10	100.00
+1090	4	206	2016-02-05	2016-02-08	10	100.00
+1091	4	193	2016-02-09	2016-02-12	10	100.00
+1092	12	32	2016-02-13	2016-02-16	10	100.00
+1093	8	96	2016-02-17	2016-02-20	10	100.00
+1094	3	149	2016-02-21	2016-02-24	10	100.00
+1095	9	90	2016-02-25	2016-02-28	10	100.00
+1096	9	77	2016-02-29	2016-03-03	10	100.00
+1097	5	182	2016-03-04	2016-03-07	10	100.00
+1098	1	191	2016-03-08	2016-03-11	10	100.00
+1099	4	113	2016-03-12	2016-03-15	10	100.00
+1100	6	107	2016-03-16	2016-03-19	10	100.00
+1101	4	67	2016-03-20	2016-03-23	10	100.00
+1102	10	124	2016-03-24	2016-03-27	10	100.00
+1103	1	67	2016-03-28	2016-03-31	10	100.00
+1104	9	108	2016-04-01	2016-04-04	10	100.00
+1105	1	184	2016-04-05	2016-04-08	10	100.00
+1106	6	30	2016-04-09	2016-04-12	10	100.00
+1107	1	221	2016-04-13	2016-04-16	10	100.00
+1108	8	47	2016-04-17	2016-04-20	10	100.00
+1109	6	179	2016-04-21	2016-04-24	10	100.00
+1110	8	195	2016-04-25	2016-04-28	10	100.00
+1111	8	36	2016-04-29	2016-05-02	10	100.00
+1112	9	171	2016-05-03	2016-05-06	10	100.00
+1113	4	105	2016-05-07	2016-05-10	10	100.00
+1114	8	212	2016-05-11	2016-05-14	10	100.00
+1115	10	23	2016-05-15	2016-05-18	10	100.00
+1116	3	45	2016-05-19	2016-05-22	10	100.00
+1117	12	80	2016-05-23	2016-05-26	10	100.00
+1118	3	183	2016-05-27	2016-05-30	10	100.00
+1119	12	110	2016-05-31	2016-06-03	10	100.00
+1120	5	184	2016-06-04	2016-06-07	10	100.00
+1121	5	153	2016-06-08	2016-06-11	10	100.00
+1122	5	98	2016-06-12	2016-06-15	10	100.00
+1123	3	167	2016-06-16	2016-06-19	10	100.00
+1124	9	152	2016-06-20	2016-06-23	10	100.00
+1125	9	195	2016-06-24	2016-06-27	10	100.00
+1126	11	100	2016-06-28	2016-07-01	10	100.00
+1127	5	221	2016-07-02	2016-07-05	10	100.00
+1128	8	48	2016-07-06	2016-07-09	10	100.00
+1129	5	124	2016-07-10	2016-07-13	10	100.00
+1130	1	97	2016-07-14	2016-07-17	10	100.00
+1131	5	194	2016-07-18	2016-07-21	10	100.00
+1132	12	67	2016-07-22	2016-07-25	10	100.00
+1133	3	118	2016-07-26	2016-07-29	10	100.00
+1134	12	168	2016-07-30	2016-08-02	10	100.00
+1135	1	106	2016-08-03	2016-08-06	10	100.00
+1136	8	175	2015-10-12	2015-10-15	11	100.00
+1137	3	37	2015-10-16	2015-10-19	11	100.00
+1138	8	81	2015-10-20	2015-10-23	11	100.00
+1139	8	176	2015-10-24	2015-10-27	11	100.00
+1140	9	181	2015-10-28	2015-10-31	11	100.00
+1141	12	166	2015-11-01	2015-11-04	11	100.00
+1142	1	63	2015-11-05	2015-11-08	11	100.00
+1143	3	184	2015-11-09	2015-11-12	11	100.00
+1144	5	76	2015-11-13	2015-11-16	11	100.00
+1145	1	78	2015-11-17	2015-11-20	11	100.00
+1146	4	30	2015-11-21	2015-11-24	11	100.00
+1147	9	35	2015-11-25	2015-11-28	11	100.00
+1148	4	175	2015-11-29	2015-12-02	11	100.00
+1149	10	85	2015-12-03	2015-12-06	11	100.00
+1150	5	144	2015-12-07	2015-12-10	11	100.00
+1151	6	122	2015-12-11	2015-12-14	11	100.00
+1152	12	46	2015-12-15	2015-12-18	11	100.00
+1153	12	202	2015-12-19	2015-12-22	11	100.00
+1154	8	137	2015-12-23	2015-12-26	11	100.00
+1155	6	92	2015-12-27	2015-12-30	11	100.00
+1156	8	173	2015-12-31	2016-01-03	11	100.00
+1157	5	175	2016-01-04	2016-01-07	11	100.00
+1158	4	89	2016-01-08	2016-01-11	11	100.00
+1159	9	193	2016-01-12	2016-01-15	11	100.00
+1160	12	22	2016-01-16	2016-01-19	11	100.00
+1161	11	45	2016-01-20	2016-01-23	11	100.00
+1162	4	35	2016-01-24	2016-01-27	11	100.00
+1163	10	105	2016-01-28	2016-01-31	11	100.00
+1164	11	207	2016-02-01	2016-02-04	11	100.00
+1165	4	206	2016-02-05	2016-02-08	11	100.00
+1166	4	38	2016-02-09	2016-02-12	11	100.00
+1167	10	28	2016-02-13	2016-02-16	11	100.00
+1168	8	62	2016-02-17	2016-02-20	11	100.00
+1169	7	19	2016-02-21	2016-02-24	11	100.00
+1170	7	134	2016-02-25	2016-02-28	11	100.00
+1171	11	14	2016-02-29	2016-03-03	11	100.00
+1172	8	126	2016-03-04	2016-03-07	11	100.00
+1173	4	42	2016-03-08	2016-03-11	11	100.00
+1174	4	27	2016-03-12	2016-03-15	11	100.00
+1175	5	207	2016-03-16	2016-03-19	11	100.00
+1176	4	159	2016-03-20	2016-03-23	11	100.00
+1177	10	177	2016-03-24	2016-03-27	11	100.00
+1178	4	187	2016-03-28	2016-03-31	11	100.00
+1179	12	197	2016-04-01	2016-04-04	11	100.00
+1180	1	117	2016-04-05	2016-04-08	11	100.00
+1181	7	160	2016-04-09	2016-04-12	11	100.00
+1182	12	78	2016-04-13	2016-04-16	11	100.00
+1183	11	181	2016-04-17	2016-04-20	11	100.00
+1184	5	100	2016-04-21	2016-04-24	11	100.00
+1185	10	84	2016-04-25	2016-04-28	11	100.00
+1186	4	170	2016-04-29	2016-05-02	11	100.00
+1187	10	127	2016-05-03	2016-05-06	11	100.00
+1188	4	16	2016-05-07	2016-05-10	11	100.00
+1189	8	158	2016-05-11	2016-05-14	11	100.00
+1190	3	62	2016-05-15	2016-05-18	11	100.00
+1191	5	50	2016-05-19	2016-05-22	11	100.00
+1192	1	138	2016-05-23	2016-05-26	11	100.00
+1193	8	75	2016-05-27	2016-05-30	11	100.00
+1194	8	201	2016-05-31	2016-06-03	11	100.00
+1195	7	143	2016-06-04	2016-06-07	11	100.00
+1196	3	40	2016-06-08	2016-06-11	11	100.00
+1197	8	42	2016-06-12	2016-06-15	11	100.00
+1198	12	216	2016-06-16	2016-06-19	11	100.00
+1199	9	130	2016-06-20	2016-06-23	11	100.00
+1200	1	95	2016-06-24	2016-06-27	11	100.00
+1201	7	176	2016-06-28	2016-07-01	11	100.00
+1202	10	177	2016-07-02	2016-07-05	11	100.00
+1203	10	178	2016-07-06	2016-07-09	11	100.00
+1204	8	117	2016-07-10	2016-07-13	11	100.00
+1205	7	204	2016-07-14	2016-07-17	11	100.00
+1206	11	125	2016-07-18	2016-07-21	11	100.00
+1207	5	90	2016-07-22	2016-07-25	11	100.00
+1208	11	49	2016-07-26	2016-07-29	11	100.00
+1209	11	23	2016-07-30	2016-08-02	11	100.00
+1210	10	143	2016-08-03	2016-08-06	11	100.00
+1211	10	209	2015-10-12	2015-10-15	12	100.00
+1212	3	122	2015-10-16	2015-10-19	12	100.00
+1213	4	178	2015-10-20	2015-10-23	12	100.00
+1214	10	170	2015-10-24	2015-10-27	12	100.00
+1215	3	154	2015-10-28	2015-10-31	12	100.00
+1216	11	116	2015-11-01	2015-11-04	12	100.00
+1217	11	163	2015-11-05	2015-11-08	12	100.00
+1218	7	134	2015-11-09	2015-11-12	12	100.00
+1219	5	33	2015-11-13	2015-11-16	12	100.00
+1220	1	204	2015-11-17	2015-11-20	12	100.00
+1221	3	176	2015-11-21	2015-11-24	12	100.00
+1222	8	204	2015-11-25	2015-11-28	12	100.00
+1223	7	191	2015-11-29	2015-12-02	12	100.00
+1224	6	167	2015-12-03	2015-12-06	12	100.00
+1225	11	44	2015-12-07	2015-12-10	12	100.00
+1226	6	79	2015-12-11	2015-12-14	12	100.00
+1227	5	180	2015-12-15	2015-12-18	12	100.00
+1228	4	191	2015-12-19	2015-12-22	12	100.00
+1229	12	157	2015-12-23	2015-12-26	12	100.00
+1230	4	144	2015-12-27	2015-12-30	12	100.00
+1231	11	221	2015-12-31	2016-01-03	12	100.00
+1232	6	34	2016-01-04	2016-01-07	12	100.00
+1233	10	46	2016-01-08	2016-01-11	12	100.00
+1234	11	130	2016-01-12	2016-01-15	12	100.00
+1235	4	92	2016-01-16	2016-01-19	12	100.00
+1236	8	36	2016-01-20	2016-01-23	12	100.00
+1237	6	132	2016-01-24	2016-01-27	12	100.00
+1238	1	205	2016-01-28	2016-01-31	12	100.00
+1239	1	60	2016-02-01	2016-02-04	12	100.00
+1240	1	105	2016-02-05	2016-02-08	12	100.00
+1241	6	183	2016-02-09	2016-02-12	12	100.00
+1242	1	125	2016-02-13	2016-02-16	12	100.00
+1243	3	56	2016-02-17	2016-02-20	12	100.00
+1244	5	91	2016-02-21	2016-02-24	12	100.00
+1245	1	204	2016-02-25	2016-02-28	12	100.00
+1246	11	17	2016-02-29	2016-03-03	12	100.00
+1247	1	35	2016-03-04	2016-03-07	12	100.00
+1248	4	199	2016-03-08	2016-03-11	12	100.00
+1249	6	203	2016-03-12	2016-03-15	12	100.00
+1250	5	96	2016-03-16	2016-03-19	12	100.00
+1251	3	60	2016-03-20	2016-03-23	12	100.00
+1252	10	202	2016-03-24	2016-03-27	12	100.00
+1253	8	116	2016-03-28	2016-03-31	12	100.00
+1254	7	25	2016-04-01	2016-04-04	12	100.00
+1255	12	19	2016-04-05	2016-04-08	12	100.00
+1256	1	36	2016-04-09	2016-04-12	12	100.00
+1257	8	64	2016-04-13	2016-04-16	12	100.00
+1258	3	176	2016-04-17	2016-04-20	12	100.00
+1259	4	205	2016-04-21	2016-04-24	12	100.00
+1260	1	23	2016-04-25	2016-04-28	12	100.00
+1261	3	216	2016-04-29	2016-05-02	12	100.00
+1262	10	175	2016-05-03	2016-05-06	12	100.00
+1263	5	172	2016-05-07	2016-05-10	12	100.00
+1264	3	116	2016-05-11	2016-05-14	12	100.00
+1265	1	87	2016-05-15	2016-05-18	12	100.00
+1266	4	74	2016-05-19	2016-05-22	12	100.00
+1267	7	98	2016-05-23	2016-05-26	12	100.00
+1268	6	69	2016-05-27	2016-05-30	12	100.00
+1269	9	213	2016-05-31	2016-06-03	12	100.00
+1270	7	169	2016-06-04	2016-06-07	12	100.00
+1271	12	139	2016-06-08	2016-06-11	12	100.00
+1272	1	50	2016-06-12	2016-06-15	12	100.00
+1273	6	209	2016-06-16	2016-06-19	12	100.00
+1274	10	126	2016-06-20	2016-06-23	12	100.00
+1275	10	149	2016-06-24	2016-06-27	12	100.00
+1276	3	27	2016-06-28	2016-07-01	12	100.00
+1277	4	154	2016-07-02	2016-07-05	12	100.00
+1278	4	106	2016-07-06	2016-07-09	12	100.00
+1279	11	174	2016-07-10	2016-07-13	12	100.00
+1280	10	80	2016-07-14	2016-07-17	12	100.00
+1281	1	174	2016-07-18	2016-07-21	12	100.00
+1282	7	205	2016-07-22	2016-07-25	12	100.00
+1283	3	161	2016-07-26	2016-07-29	12	100.00
+1284	7	48	2016-07-30	2016-08-02	12	100.00
+1285	10	139	2016-08-03	2016-08-06	12	100.00
+1286	6	152	2015-10-12	2015-10-15	13	100.00
+1287	5	48	2015-10-16	2015-10-19	13	100.00
+1288	1	89	2015-10-20	2015-10-23	13	100.00
+1289	10	117	2015-10-24	2015-10-27	13	100.00
+1290	9	208	2015-10-28	2015-10-31	13	100.00
+1291	9	162	2015-11-01	2015-11-04	13	100.00
+1292	4	185	2015-11-05	2015-11-08	13	100.00
+1293	6	105	2015-11-09	2015-11-12	13	100.00
+1294	11	19	2015-11-13	2015-11-16	13	100.00
+1295	1	192	2015-11-17	2015-11-20	13	100.00
+1296	7	38	2015-11-21	2015-11-24	13	100.00
+1297	5	157	2015-11-25	2015-11-28	13	100.00
+1298	5	39	2015-11-29	2015-12-02	13	100.00
+1299	12	164	2015-12-03	2015-12-06	13	100.00
+1300	3	90	2015-12-07	2015-12-10	13	100.00
+1301	1	214	2015-12-11	2015-12-14	13	100.00
+1302	4	118	2015-12-15	2015-12-18	13	100.00
+1303	9	104	2015-12-19	2015-12-22	13	100.00
+1304	6	217	2015-12-23	2015-12-26	13	100.00
+1305	6	192	2015-12-27	2015-12-30	13	100.00
+1306	11	64	2015-12-31	2016-01-03	13	100.00
+1307	11	18	2016-01-04	2016-01-07	13	100.00
+1308	3	179	2016-01-08	2016-01-11	13	100.00
+1309	8	200	2016-01-12	2016-01-15	13	100.00
+1310	10	113	2016-01-16	2016-01-19	13	100.00
+1311	9	152	2016-01-20	2016-01-23	13	100.00
+1312	3	159	2016-01-24	2016-01-27	13	100.00
+1313	1	215	2016-01-28	2016-01-31	13	100.00
+1314	12	132	2016-02-01	2016-02-04	13	100.00
+1315	4	219	2016-02-05	2016-02-08	13	100.00
+1316	7	92	2016-02-09	2016-02-12	13	100.00
+1317	4	58	2016-02-13	2016-02-16	13	100.00
+1318	5	102	2016-02-17	2016-02-20	13	100.00
+1319	7	37	2016-02-21	2016-02-24	13	100.00
+1320	4	191	2016-02-25	2016-02-28	13	100.00
+1321	3	78	2016-02-29	2016-03-03	13	100.00
+1322	12	90	2016-03-04	2016-03-07	13	100.00
+1323	9	195	2016-03-08	2016-03-11	13	100.00
+1324	12	192	2016-03-12	2016-03-15	13	100.00
+1325	3	75	2016-03-16	2016-03-19	13	100.00
+1326	5	199	2016-03-20	2016-03-23	13	100.00
+1327	1	91	2016-03-24	2016-03-27	13	100.00
+1328	9	121	2016-03-28	2016-03-31	13	100.00
+1329	8	121	2016-04-01	2016-04-04	13	100.00
+1330	6	166	2016-04-05	2016-04-08	13	100.00
+1331	11	89	2016-04-09	2016-04-12	13	100.00
+1332	12	164	2016-04-13	2016-04-16	13	100.00
+1333	6	95	2016-04-17	2016-04-20	13	100.00
+1334	8	92	2016-04-21	2016-04-24	13	100.00
+1335	11	95	2016-04-25	2016-04-28	13	100.00
+1336	8	182	2016-04-29	2016-05-02	13	100.00
+1337	5	187	2016-05-03	2016-05-06	13	100.00
+1338	8	49	2016-05-07	2016-05-10	13	100.00
+1339	5	48	2016-05-11	2016-05-14	13	100.00
+1340	3	30	2016-05-15	2016-05-18	13	100.00
+1341	6	204	2016-05-19	2016-05-22	13	100.00
+1342	1	137	2016-05-23	2016-05-26	13	100.00
+1343	1	104	2016-05-27	2016-05-30	13	100.00
+1344	10	194	2016-05-31	2016-06-03	13	100.00
+1345	11	146	2016-06-04	2016-06-07	13	100.00
+1346	4	108	2016-06-08	2016-06-11	13	100.00
+1347	3	64	2016-06-12	2016-06-15	13	100.00
+1348	8	67	2016-06-16	2016-06-19	13	100.00
+1349	10	110	2016-06-20	2016-06-23	13	100.00
+1350	9	20	2016-06-24	2016-06-27	13	100.00
+1351	4	95	2016-06-28	2016-07-01	13	100.00
+1352	12	40	2016-07-02	2016-07-05	13	100.00
+1353	12	144	2016-07-06	2016-07-09	13	100.00
+1354	8	117	2016-07-10	2016-07-13	13	100.00
+1355	6	166	2016-07-14	2016-07-17	13	100.00
+1356	11	100	2016-07-18	2016-07-21	13	100.00
+1357	6	109	2016-07-22	2016-07-25	13	100.00
+1358	11	143	2016-07-26	2016-07-29	13	100.00
+1359	4	31	2016-07-30	2016-08-02	13	100.00
+1360	5	197	2016-08-03	2016-08-06	13	100.00
+1361	10	64	2015-10-12	2015-10-15	14	100.00
+1362	11	109	2015-10-16	2015-10-19	14	100.00
+1363	12	160	2015-10-20	2015-10-23	14	100.00
+1364	12	144	2015-10-24	2015-10-27	14	100.00
+1365	7	54	2015-10-28	2015-10-31	14	100.00
+1366	5	41	2015-11-01	2015-11-04	14	100.00
+1367	11	67	2015-11-05	2015-11-08	14	100.00
+1368	5	13	2015-11-09	2015-11-12	14	100.00
+1369	1	111	2015-11-13	2015-11-16	14	100.00
+1370	10	104	2015-11-17	2015-11-20	14	100.00
+1371	5	196	2015-11-21	2015-11-24	14	100.00
+1372	9	121	2015-11-25	2015-11-28	14	100.00
+1373	1	42	2015-11-29	2015-12-02	14	100.00
+1374	6	153	2015-12-03	2015-12-06	14	100.00
+1375	8	126	2015-12-07	2015-12-10	14	100.00
+1376	4	103	2015-12-11	2015-12-14	14	100.00
+1377	3	33	2015-12-15	2015-12-18	14	100.00
+1378	11	42	2015-12-19	2015-12-22	14	100.00
+1379	10	215	2015-12-23	2015-12-26	14	100.00
+1380	6	60	2015-12-27	2015-12-30	14	100.00
+1381	4	61	2015-12-31	2016-01-03	14	100.00
+1382	10	124	2016-01-04	2016-01-07	14	100.00
+1383	11	65	2016-01-08	2016-01-11	14	100.00
+1384	8	44	2016-01-12	2016-01-15	14	100.00
+1385	9	36	2016-01-16	2016-01-19	14	100.00
+\.
+
+
+--
+-- TOC entry 2563 (class 0 OID 0)
+-- Dependencies: 193
+-- Name: hospedagem_codhospedagem_seq; Type: SEQUENCE SET; Schema: public; Owner: kopzinski
+--
+
+SELECT pg_catalog.setval('hospedagem_codhospedagem_seq', 1385, true);
+
+
+--
+-- TOC entry 2520 (class 0 OID 16828)
+-- Dependencies: 190
+-- Data for Name: hospede; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY hospede (codhospede, nome, cidade, datanascimento) FROM stdin;
+12	LUIGI SIKORA	ARARANGUA	1983-07-11
+13	PAULO GAIATO	URUGUAIANA	1979-06-30
+14	WINNIE BRAGA	ALVORADA	1968-05-30
+15	LOUISE MARTINS	URUGUAIANA	1992-08-04
+16	JANE PINHEIRO	MARAU	1986-07-19
+17	VERONICA KOPZINSKI	TAPES	1990-07-30
+18	EDDIE LEAL	ALEGRETE	1980-07-02
+19	LUIGI PINHEIRO	VIAMAO	1969-06-02
+20	TULIPA MELLO	ALVORADA	1984-07-13
+21	VERONICA BRAGA	URUGUAIANA	1991-08-02
+22	PAULO GAIATO	MOSTARDAS	1995-08-18
+23	SAMANTA SILVA	VIAMAO	1994-08-15
+24	WINNIE MARTINS	ALEGRETE	1994-08-15
+25	VERONICA LEAL	VIAMAO	1994-08-15
+26	TULIPA MELLO	ALVORADA	1994-08-15
+27	EDUARDO MELLO	ITAQUI	1995-08-18
+28	VERONICA MELLO	MOSTARDAS	1994-08-15
+29	SAMANTA DIFINI	MONTENEGRO	1994-08-15
+30	WINNIE SILVA	ITAQUI	1994-08-15
+31	EDDIE DIFINI	ITAQUI	1995-08-18
+32	LUIGI GAIATO	MONTENEGRO	1995-08-18
+33	SAMANTA DIFINI	MOSTARDAS	1995-08-18
+34	EDDIE SIKORA	ALVORADA	1995-08-18
+35	SAMANTA MELLO	MOSTARDAS	1995-08-18
+36	TULIPA GAIATO	VIAMAO	1995-08-18
+37	EDUARDO MELLO	URUGUAIANA	1994-08-15
+38	LOUISE LEAL	ARARANGUA	1995-08-18
+39	PAULO PINHEIRO	MONTENEGRO	1995-08-18
+40	WINNIE GAIATO	MARAU	1995-08-18
+41	VERONICA KOPZINSKI	MOSTARDAS	1995-08-18
+42	SAMANTA BRAGA	TAPES	1994-08-15
+43	TULIPA LEAL	ALVORADA	1994-08-15
+44	PAULO DIFINI	ALEGRETE	1995-08-18
+45	SAMANTA SILVA	ITAQUI	1995-08-18
+46	TULIPA LEAL	MARAU	1995-08-18
+47	VERONICA GAIATO	ALVORADA	1995-08-18
+48	LOUISE SIKORA	ITAQUI	1994-08-15
+49	VERONICA BRAGA	MONTENEGRO	1994-08-15
+50	SAMANTA DIFINI	ARARANGUA	1994-08-15
+51	PAULO BRAGA	ITAQUI	1995-08-18
+52	EDDIE LEAL	MONTENEGRO	1995-08-18
+53	PAULO SIKORA	ALEGRETE	1994-08-15
+54	LUIGI GAIATO	ARARANGUA	1994-08-15
+55	VERONICA SIKORA	ITAQUI	1994-08-15
+56	TULIPA SIKORA	ALEGRETE	1995-08-18
+57	TULIPA KOPZINSKI	MOSTARDAS	1994-08-15
+58	EDUARDO LEAL	ALVORADA	1994-08-15
+59	TULIPA KOPZINSKI	URUGUAIANA	1994-08-15
+60	EDDIE BRAGA	ITAQUI	1995-08-18
+61	JANE PINHEIRO	ARARANGUA	1994-08-15
+62	PAULO LEAL	ALEGRETE	1995-08-18
+63	WINNIE KOPZINSKI	ALVORADA	1995-08-18
+64	EDDIE PINHEIRO	ARARANGUA	1994-08-15
+65	JANE SIKORA	MONTENEGRO	1994-08-15
+66	LOUISE MELLO	URUGUAIANA	1994-08-15
+67	JANE PINHEIRO	ALVORADA	1994-08-15
+68	LOUISE BRAGA	TAPES	1994-08-15
+69	VERONICA MARTINS	ALVORADA	1994-08-15
+70	EDDIE PINHEIRO	ALVORADA	1995-08-18
+71	WINNIE MELLO	ITAQUI	1994-08-15
+72	TULIPA MARTINS	ARARANGUA	1995-08-18
+73	LUIGI BRAGA	ARARANGUA	1994-08-15
+74	EDUARDO KOPZINSKI	VIAMAO	1995-08-18
+75	EDDIE DIFINI	MONTENEGRO	1994-08-15
+76	VERONICA MELLO	TAPES	1994-08-15
+77	LUIGI DIFINI	ARARANGUA	1994-08-15
+78	LUIGI DIFINI	ALEGRETE	1995-08-18
+79	LUIGI BRAGA	MOSTARDAS	1994-08-15
+80	TULIPA GAIATO	ITAQUI	1995-08-18
+81	EDDIE MELLO	ITAQUI	1995-08-18
+82	JANE BRAGA	ARARANGUA	1995-08-18
+83	WINNIE SIKORA	MOSTARDAS	1994-08-15
+84	EDDIE BRAGA	ITAQUI	1994-08-15
+85	VERONICA MELLO	ITAQUI	1994-08-15
+86	EDDIE MELLO	TAPES	1994-08-15
+87	PAULO GAIATO	VIAMAO	1994-08-15
+88	SAMANTA KOPZINSKI	URUGUAIANA	1994-08-15
+89	VERONICA MELLO	ALEGRETE	1994-08-15
+90	JANE PINHEIRO	URUGUAIANA	1994-08-15
+91	LUIGI MARTINS	ALVORADA	1995-08-18
+92	SAMANTA SIKORA	MONTENEGRO	1995-08-18
+93	EDDIE GAIATO	ALEGRETE	1994-08-15
+94	WINNIE BRAGA	MONTENEGRO	1994-08-15
+95	WINNIE LEAL	ALEGRETE	1994-08-15
+96	LOUISE DIFINI	TAPES	1994-08-15
+97	SAMANTA LEAL	MARAU	1994-08-15
+98	TULIPA LEAL	TAPES	1994-08-15
+99	TULIPA SIKORA	ITAQUI	1994-08-15
+100	LOUISE PINHEIRO	MARAU	1994-08-15
+101	LUIGI KOPZINSKI	MOSTARDAS	1995-08-18
+102	JANE LEAL	MONTENEGRO	1994-08-15
+103	TULIPA SILVA	VIAMAO	1994-08-15
+104	WINNIE MELLO	URUGUAIANA	1995-08-18
+105	EDDIE LEAL	ALVORADA	1995-08-18
+106	WINNIE KOPZINSKI	TAPES	1995-08-18
+107	SAMANTA PINHEIRO	URUGUAIANA	1994-08-15
+108	LUIGI DIFINI	ARARANGUA	1995-08-18
+109	TULIPA DIFINI	MARAU	1994-08-15
+110	EDDIE MARTINS	ITAQUI	1995-08-18
+111	LOUISE PINHEIRO	TAPES	1994-08-15
+112	TULIPA MELLO	URUGUAIANA	1995-08-18
+113	VERONICA SIKORA	ALEGRETE	1994-08-15
+114	LUIGI SILVA	TAPES	1994-08-15
+115	VERONICA MARTINS	MONTENEGRO	1995-08-18
+116	PAULO KOPZINSKI	ALEGRETE	1995-08-18
+117	EDDIE GAIATO	ARARANGUA	1995-08-18
+118	VERONICA LEAL	ITAQUI	1995-08-18
+119	LUIGI BRAGA	ALVORADA	1994-08-15
+120	PAULO LEAL	MARAU	1995-08-18
+121	EDUARDO DIFINI	MONTENEGRO	1994-08-15
+122	EDUARDO SILVA	URUGUAIANA	1975-06-24
+123	LOUISE BRAGA	ALVORADA	1975-06-24
+124	LUIGI GAIATO	MONTENEGRO	1975-06-24
+125	WINNIE MARTINS	ITAQUI	1972-06-15
+126	SAMANTA SIKORA	TAPES	1971-06-13
+127	EDDIE DIFINI	ALVORADA	1975-06-24
+128	PAULO DIFINI	TAPES	1972-06-15
+129	SAMANTA DIFINI	ALVORADA	1974-06-21
+130	EDDIE PINHEIRO	ALVORADA	1974-06-21
+131	EDUARDO MELLO	TAPES	1973-06-18
+132	WINNIE BRAGA	MOSTARDAS	1971-06-13
+133	TULIPA SIKORA	VIAMAO	1973-06-18
+134	JANE KOPZINSKI	MOSTARDAS	1973-06-18
+135	SAMANTA PINHEIRO	MONTENEGRO	1974-06-21
+136	LOUISE SIKORA	VIAMAO	1972-06-15
+137	VERONICA MELLO	MONTENEGRO	1972-06-15
+138	LUIGI DIFINI	TAPES	1972-06-15
+139	EDUARDO KOPZINSKI	ALVORADA	1974-06-21
+140	SAMANTA LEAL	TAPES	1971-06-13
+141	EDUARDO SILVA	ALVORADA	1971-06-13
+142	TULIPA BRAGA	URUGUAIANA	1972-06-15
+143	EDDIE GAIATO	ALEGRETE	1971-06-13
+144	LOUISE MARTINS	ARARANGUA	1974-06-21
+145	TULIPA SILVA	MONTENEGRO	1974-06-21
+146	EDUARDO MARTINS	ALVORADA	1974-06-21
+147	VERONICA PINHEIRO	VIAMAO	1974-06-21
+148	WINNIE KOPZINSKI	ALEGRETE	1971-06-13
+149	EDDIE PINHEIRO	ITAQUI	1972-06-15
+150	LOUISE PINHEIRO	ALVORADA	1973-06-18
+151	EDDIE DIFINI	MONTENEGRO	1973-06-18
+152	LUIGI SIKORA	ITAQUI	1973-06-18
+153	JANE MELLO	ALVORADA	1975-06-24
+154	VERONICA KOPZINSKI	MARAU	1974-06-21
+155	PAULO SILVA	URUGUAIANA	1972-06-15
+156	LOUISE GAIATO	MONTENEGRO	1971-06-13
+157	LOUISE BRAGA	MARAU	1974-06-21
+158	PAULO PINHEIRO	URUGUAIANA	1972-06-15
+159	EDUARDO DIFINI	MARAU	1974-06-21
+160	EDDIE MARTINS	ITAQUI	1971-06-13
+161	LOUISE GAIATO	ALVORADA	1975-06-24
+162	EDDIE GAIATO	TAPES	1975-06-24
+163	LUIGI SIKORA	MONTENEGRO	1972-06-15
+164	EDDIE LEAL	ALVORADA	1974-06-21
+165	PAULO BRAGA	MONTENEGRO	1973-06-18
+166	SAMANTA PINHEIRO	MOSTARDAS	1972-06-15
+167	EDUARDO GAIATO	URUGUAIANA	1975-06-24
+168	PAULO DIFINI	ARARANGUA	1972-06-15
+169	LUIGI MARTINS	ARARANGUA	1975-06-24
+170	LOUISE PINHEIRO	ARARANGUA	1973-06-18
+171	VERONICA MELLO	ALVORADA	1975-06-24
+172	SAMANTA MELLO	TAPES	1972-06-15
+173	JANE KOPZINSKI	VIAMAO	1974-06-21
+174	EDDIE DIFINI	ALEGRETE	1973-06-18
+175	JANE LEAL	MONTENEGRO	1971-06-13
+176	EDDIE KOPZINSKI	VIAMAO	1975-06-24
+177	PAULO LEAL	TAPES	1973-06-18
+178	JANE GAIATO	ALVORADA	1972-06-15
+179	EDUARDO DIFINI	MOSTARDAS	1971-06-13
+180	LUIGI SILVA	TAPES	1975-06-24
+181	LOUISE SIKORA	URUGUAIANA	1971-06-13
+182	WINNIE SIKORA	MONTENEGRO	1975-06-24
+183	EDDIE SILVA	MARAU	1972-06-15
+184	EDUARDO PINHEIRO	ALVORADA	1973-06-18
+185	JANE MELLO	ALEGRETE	1974-06-21
+186	SAMANTA MARTINS	ARARANGUA	1975-06-24
+187	EDUARDO PINHEIRO	ALVORADA	1972-06-15
+188	LOUISE KOPZINSKI	ALVORADA	1973-06-18
+189	JANE BRAGA	ALVORADA	1971-06-13
+190	TULIPA MELLO	VIAMAO	1975-06-24
+191	JANE MARTINS	MARAU	1975-06-24
+192	EDDIE DIFINI	ALVORADA	1974-06-21
+193	WINNIE LEAL	VIAMAO	1971-06-13
+194	WINNIE PINHEIRO	URUGUAIANA	1974-06-21
+195	EDDIE SIKORA	MOSTARDAS	1971-06-13
+196	LUIGI DIFINI	URUGUAIANA	1973-06-18
+197	VERONICA MELLO	MOSTARDAS	1972-06-15
+198	EDDIE LEAL	ARARANGUA	1975-06-24
+199	EDUARDO MELLO	MARAU	1971-06-13
+200	JANE SILVA	URUGUAIANA	1972-06-15
+201	WINNIE MARTINS	ITAQUI	1975-06-24
+202	VERONICA SIKORA	ALEGRETE	1974-06-21
+203	EDUARDO DIFINI	URUGUAIANA	1974-06-21
+204	TULIPA PINHEIRO	VIAMAO	1975-06-24
+205	JANE KOPZINSKI	ALEGRETE	1971-06-13
+206	LOUISE SIKORA	MARAU	1974-06-21
+207	VERONICA SILVA	ITAQUI	1975-06-24
+208	LOUISE SILVA	URUGUAIANA	1971-06-13
+209	WINNIE LEAL	VIAMAO	1974-06-21
+210	PAULO GAIATO	URUGUAIANA	1973-06-18
+211	LOUISE MELLO	ALVORADA	1971-06-13
+212	TULIPA BRAGA	ARARANGUA	1971-06-13
+213	JANE KOPZINSKI	TAPES	1974-06-21
+214	TULIPA GAIATO	MOSTARDAS	1973-06-18
+215	SAMANTA PINHEIRO	TAPES	1972-06-15
+216	TULIPA GAIATO	ALVORADA	1972-06-15
+217	SAMANTA LEAL	MONTENEGRO	1975-06-24
+218	LOUISE PINHEIRO	MOSTARDAS	1973-06-18
+219	EDUARDO GAIATO	ITAQUI	1973-06-18
+220	PAULO SIKORA	VIAMAO	1971-06-13
+221	EDUARDO MELLO	MONTENEGRO	1972-06-15
+\.
+
+
+--
+-- TOC entry 2564 (class 0 OID 0)
+-- Dependencies: 189
+-- Name: hospede_codhospede_seq; Type: SEQUENCE SET; Schema: public; Owner: kopzinski
+--
+
+SELECT pg_catalog.setval('hospede_codhospede_seq', 221, true);
+
+
+--
+-- TOC entry 2527 (class 0 OID 16878)
+-- Dependencies: 197
+-- Data for Name: nome; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY nome (nome) FROM stdin;
+PAULO
+EDUARDO
+WINNIE
+VERONICA
+JANE
+SAMANTA
+TULIPA
+LUIGI
+EDDIE
+LOUISE
+\.
+
+
+--
+-- TOC entry 2504 (class 0 OID 16399)
+-- Dependencies: 174
+-- Data for Name: obra; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY obra (cod_obra, nome_obra, localizacao, tipo, cod_const, cod_eng_resp) FROM stdin;
+1	Boqueirao                     	BR 116, Km 25                                     	Viaduto        	c4        	e2      
+2	Solar Firenze                 	Rua Mariland, 512 - Porto Alegre                  	Edificio       	c1        	e1      
+3	Serraria                      	Rua Sarandi, 600 - Porto Alegre                   	Ponte          	c4        	e3      
+4	Venezia                       	Av. Carlos Soares, 890 - Canoas                   	Edificio       	c3        	e4      
+5	Guaiba                        	Av. Praia de Belas, 1200 - Porto Alegre           	Edificio       	c2        	e1      
+6	particular                    	Rua Ipanema, 310 - Porto Alegre                   	Casa           	c3        	e3      
+\.
+
+
+--
+-- TOC entry 2506 (class 0 OID 16419)
+-- Dependencies: 176
+-- Data for Name: obra_operario; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY obra_operario (cod_obra, cart_trab, data, atividades) FROM stdin;
+3	op010          	1997-06-15	preparacao da base                                                                                                                                                                                      
+1	op030          	1997-06-18	preparacao e colocacao de ferros                                                                                                                                                                        
+1	op010          	1997-08-02	\N
+2	op876          	1997-08-20	pintura aberturas do 2o. andar                                                                                                                                                                          
+2	op030          	1997-08-12	colocacao aberturas 20. andar                                                                                                                                                                           
+4	op010          	1997-03-03	colocacao telhado                                                                                                                                                                                       
+\.
+
+
+--
+-- TOC entry 2505 (class 0 OID 16414)
+-- Dependencies: 175
+-- Data for Name: operario; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY operario (cart_trab, nomeop, endereco, telefone) FROM stdin;
+op030          	Joao Souza                    	Rua Lima, 89 - Porto Alegre                       	249-9087            
+op010          	Paulo Castro                  	Av. Protasio Alves, 23/101 - Porto Alegre         	\N
+op876          	Luis Padilha                  	Av. Salgado Filho, 345 - Canoas                   	472-9083            
+op452          	Marcos Freitas                	Travessa do Canto, 67/304 - Porto Alegre          	331-7838            
+\.
+
+
+--
+-- TOC entry 2507 (class 0 OID 16434)
+-- Dependencies: 177
+-- Data for Name: operario_construtora; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY operario_construtora (cart_trab, cod_const) FROM stdin;
+op010          	c4        
+op030          	c4        
+op030          	c1        
+op010          	c3        
+op876          	c1        
+\.
+
+
+--
+-- TOC entry 2528 (class 0 OID 16883)
+-- Dependencies: 198
+-- Data for Name: sobrenome; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY sobrenome (sobrenome) FROM stdin;
+KOPZINSKI
+MELLO
+LEAL
+BRAGA
+PINHEIRO
+DIFINI
+SIKORA
+GAIATO
+MARTINS
+SILVA
+\.
+
+
+--
+-- TOC entry 2539 (class 0 OID 17033)
+-- Dependencies: 209
+-- Data for Name: tr_audit; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY tr_audit (idaudit, operacao, usuario, datahora, maxsalantes, maxsaldepois) FROM stdin;
+1	teste	kopzinski	2015-10-28 20:08:03.971778	\N	\N
+3	INSERT	kopzinski	2015-10-28 20:50:20.340578	0.00	2000.00
+4	INSERT	kopzinski	2015-10-28 20:50:20.340578	0.00	3000.00
+5	INSERT	kopzinski	2015-10-28 20:50:20.340578	0.00	4000.00
+\.
+
+
+--
+-- TOC entry 2565 (class 0 OID 0)
+-- Dependencies: 208
+-- Name: tr_audit_idaudit_seq; Type: SEQUENCE SET; Schema: public; Owner: kopzinski
+--
+
+SELECT pg_catalog.setval('tr_audit_idaudit_seq', 5, true);
+
+
+--
+-- TOC entry 2535 (class 0 OID 17000)
+-- Dependencies: 205
+-- Data for Name: tr_emp; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY tr_emp (idemp, nome, maxsal, dth_inc, usu_inc, dth_atu, usu_atu) FROM stdin;
+1	paulo	2000.00	\N	\N	\N	\N
+2	eduardo	3000.00	\N	\N	\N	\N
+3	mello	4000.00	\N	\N	\N	\N
+\.
+
+
+--
+-- TOC entry 2537 (class 0 OID 17017)
+-- Dependencies: 207
+-- Data for Name: tr_promovido; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY tr_promovido (anomes, qtd) FROM stdin;
+12	1
+201510	1
+10	2
+\.
+
+
+--
+-- TOC entry 2536 (class 0 OID 17006)
+-- Dependencies: 206
+-- Data for Name: tr_sal_emp; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY tr_sal_emp (idsal_emp, idemp, dtini, dtfim, sal, usu_inc, dth_inc, usu_atu, dth_atu) FROM stdin;
+1	1	2015-10-28	2015-10-29	1000.00	kopzinski	2015-10-28 20:56:05.469841	\N	\N
+\.
+
+
+--
+-- TOC entry 2509 (class 0 OID 16519)
+-- Dependencies: 179
+-- Data for Name: xcliente; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY xcliente (codcliente, cliente, cpf, endereco) FROM stdin;
+1	João da Silva	123456789  	Rua Andradas, 250             
+2	Maria do Rosário	26547899   	Rua Lima e Silva, 648         
+3	Paulo Silveira	8963254    	Rua Plínio Brasil Milano, 980 
+4	Rosa Aparecida dos Santos	5896332123 	Av. Ipiranga, 8960            
+5	Paula Nunes	675433332  	Av. Assis Brasil, 60          
+\.
+
+
+--
+-- TOC entry 2512 (class 0 OID 16544)
+-- Dependencies: 182
+-- Data for Name: xitensvenda; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY xitensvenda (nnf, dtvenda, codproduto, qtde) FROM stdin;
+1	2002-04-20	1	1
+1	2002-04-20	2	2
+2	2002-04-20	1	3
+2	2002-04-20	2	2
+2	2002-04-20	4	4
+1	2002-04-25	3	9
+1	2002-04-30	3	7
+\.
+
+
+--
+-- TOC entry 2508 (class 0 OID 16514)
+-- Dependencies: 178
+-- Data for Name: xproduto; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY xproduto (codproduto, descricaoproduto, unidade, preco) FROM stdin;
+1	Coca Cola	Lt	1.19999999999999996
+2	Presunto Sadia	Kg	5.40000000000000036
+3	Sabonete Palmolive	Un	0.650000000000000022
+4	Shampoo Colorama	Un	2.60000000000000009
+5	Cerveja Skol	Gf	0.989999999999999991
+\.
+
+
+--
+-- TOC entry 2510 (class 0 OID 16524)
+-- Dependencies: 180
+-- Data for Name: xtipospagamento; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY xtipospagamento (codtppagamento, descricaotppagamento) FROM stdin;
+1	Cheque
+2	Dinheiro
+3	Crediário
+\.
+
+
+--
+-- TOC entry 2511 (class 0 OID 16529)
+-- Dependencies: 181
+-- Data for Name: xvenda; Type: TABLE DATA; Schema: public; Owner: kopzinski
+--
+
+COPY xvenda (nnf, dtvenda, codcliente, codtppagamento, vlvenda) FROM stdin;
+1	2002-04-20	1	1	15
+2	2002-04-20	2	1	7.5
+1	2002-04-25	3	2	7.90000000000000036
+1	2002-04-30	3	2	8.5
+\.
+
+
+--
+-- TOC entry 2365 (class 2606 OID 16991)
+-- Name: antropometria_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY antropometria
+    ADD CONSTRAINT antropometria_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2346 (class 2606 OID 16841)
+-- Name: atendente_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY atendente
+    ADD CONSTRAINT atendente_pkey PRIMARY KEY (codatendente);
+
+
+--
+-- TOC entry 2363 (class 2606 OID 16983)
+-- Name: atleta_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY atleta
+    ADD CONSTRAINT atleta_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2355 (class 2606 OID 16877)
+-- Name: cidade_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY cidade
+    ADD CONSTRAINT cidade_pkey PRIMARY KEY (nomecidade);
+
+
+--
+-- TOC entry 2353 (class 2606 OID 16872)
+-- Name: cidades_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY cidades
+    ADD CONSTRAINT cidades_pkey PRIMARY KEY (nomecidade);
+
+
+--
+-- TOC entry 2312 (class 2606 OID 16391)
+-- Name: construtora_cgc_key; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY construtora
+    ADD CONSTRAINT construtora_cgc_key UNIQUE (cgc);
+
+
+--
+-- TOC entry 2314 (class 2606 OID 16389)
+-- Name: construtora_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY construtora
+    ADD CONSTRAINT construtora_pkey PRIMARY KEY (cod_const);
+
+
+--
+-- TOC entry 2361 (class 2606 OID 16895)
+-- Name: employee_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY employee
+    ADD CONSTRAINT employee_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2316 (class 2606 OID 16398)
+-- Name: engenheiro_cpf_key; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY engenheiro
+    ADD CONSTRAINT engenheiro_cpf_key UNIQUE (cpf);
+
+
+--
+-- TOC entry 2318 (class 2606 OID 16396)
+-- Name: engenheiro_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY engenheiro
+    ADD CONSTRAINT engenheiro_pkey PRIMARY KEY (crea);
+
+
+--
+-- TOC entry 2340 (class 2606 OID 16801)
+-- Name: ex_categoria_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY ex_categoria
+    ADD CONSTRAINT ex_categoria_pkey PRIMARY KEY (idcategoria);
+
+
+--
+-- TOC entry 2338 (class 2606 OID 16793)
+-- Name: ex_motorista_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY ex_motorista
+    ADD CONSTRAINT ex_motorista_pkey PRIMARY KEY (cnh);
+
+
+--
+-- TOC entry 2342 (class 2606 OID 16812)
+-- Name: ex_multa_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY ex_multa
+    ADD CONSTRAINT ex_multa_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 2349 (class 2606 OID 16855)
+-- Name: hospedagem_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY hospedagem
+    ADD CONSTRAINT hospedagem_pkey PRIMARY KEY (codhospedagem);
+
+
+--
+-- TOC entry 2344 (class 2606 OID 16833)
+-- Name: hospede_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY hospede
+    ADD CONSTRAINT hospede_pkey PRIMARY KEY (codhospede);
+
+
+--
+-- TOC entry 2357 (class 2606 OID 16882)
+-- Name: nome_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY nome
+    ADD CONSTRAINT nome_pkey PRIMARY KEY (nome);
+
+
+--
+-- TOC entry 2324 (class 2606 OID 16423)
+-- Name: obra_operario_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY obra_operario
+    ADD CONSTRAINT obra_operario_pkey PRIMARY KEY (cod_obra, cart_trab, data);
+
+
+--
+-- TOC entry 2320 (class 2606 OID 16403)
+-- Name: obra_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY obra
+    ADD CONSTRAINT obra_pkey PRIMARY KEY (cod_obra);
+
+
+--
+-- TOC entry 2326 (class 2606 OID 16438)
+-- Name: operario_construtora_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY operario_construtora
+    ADD CONSTRAINT operario_construtora_pkey PRIMARY KEY (cart_trab, cod_const);
+
+
+--
+-- TOC entry 2322 (class 2606 OID 16418)
+-- Name: operario_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY operario
+    ADD CONSTRAINT operario_pkey PRIMARY KEY (cart_trab);
+
+
+--
+-- TOC entry 2359 (class 2606 OID 16887)
+-- Name: sobrenome_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY sobrenome
+    ADD CONSTRAINT sobrenome_pkey PRIMARY KEY (sobrenome);
+
+
+--
+-- TOC entry 2373 (class 2606 OID 17040)
+-- Name: tr_audit_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY tr_audit
+    ADD CONSTRAINT tr_audit_pkey PRIMARY KEY (idaudit);
+
+
+--
+-- TOC entry 2367 (class 2606 OID 17005)
+-- Name: tr_emp_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY tr_emp
+    ADD CONSTRAINT tr_emp_pkey PRIMARY KEY (idemp);
+
+
+--
+-- TOC entry 2371 (class 2606 OID 17022)
+-- Name: tr_promovido_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY tr_promovido
+    ADD CONSTRAINT tr_promovido_pkey PRIMARY KEY (anomes);
+
+
+--
+-- TOC entry 2369 (class 2606 OID 17011)
+-- Name: tr_sal_emp_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY tr_sal_emp
+    ADD CONSTRAINT tr_sal_emp_pkey PRIMARY KEY (idsal_emp);
+
+
+--
+-- TOC entry 2330 (class 2606 OID 16523)
+-- Name: xcliente_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY xcliente
+    ADD CONSTRAINT xcliente_pkey PRIMARY KEY (codcliente);
+
+
+--
+-- TOC entry 2336 (class 2606 OID 16548)
+-- Name: xitensvenda_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY xitensvenda
+    ADD CONSTRAINT xitensvenda_pkey PRIMARY KEY (nnf, dtvenda, codproduto);
+
+
+--
+-- TOC entry 2328 (class 2606 OID 16518)
+-- Name: xproduto_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY xproduto
+    ADD CONSTRAINT xproduto_pkey PRIMARY KEY (codproduto);
+
+
+--
+-- TOC entry 2332 (class 2606 OID 16528)
+-- Name: xtipospagamento_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY xtipospagamento
+    ADD CONSTRAINT xtipospagamento_pkey PRIMARY KEY (codtppagamento);
+
+
+--
+-- TOC entry 2334 (class 2606 OID 16533)
+-- Name: xvenda_pkey; Type: CONSTRAINT; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+ALTER TABLE ONLY xvenda
+    ADD CONSTRAINT xvenda_pkey PRIMARY KEY (nnf, dtvenda);
+
+
+--
+-- TOC entry 2347 (class 1259 OID 16847)
+-- Name: ifk_rel_01; Type: INDEX; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE INDEX ifk_rel_01 ON atendente USING btree (codsuperior);
+
+
+--
+-- TOC entry 2350 (class 1259 OID 16866)
+-- Name: ifk_rel_02; Type: INDEX; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE INDEX ifk_rel_02 ON hospedagem USING btree (codhospede);
+
+
+--
+-- TOC entry 2351 (class 1259 OID 16867)
+-- Name: ifk_rel_03; Type: INDEX; Schema: public; Owner: kopzinski; Tablespace: 
+--
+
+CREATE INDEX ifk_rel_03 ON hospedagem USING btree (codatendente);
+
+
+--
+-- TOC entry 2391 (class 2620 OID 17045)
+-- Name: tr_pre_insert_emp; Type: TRIGGER; Schema: public; Owner: kopzinski
+--
+
+CREATE TRIGGER tr_pre_insert_emp BEFORE INSERT OR UPDATE ON tr_emp FOR EACH ROW EXECUTE PROCEDURE tr_audit_emp();
+
+
+--
+-- TOC entry 2392 (class 2620 OID 17043)
+-- Name: tr_pre_insert_update_sal; Type: TRIGGER; Schema: public; Owner: kopzinski
+--
+
+CREATE TRIGGER tr_pre_insert_update_sal BEFORE INSERT OR UPDATE ON tr_sal_emp FOR EACH ROW EXECUTE PROCEDURE valida_registro_salario_pre();
+
+
+--
+-- TOC entry 2389 (class 2606 OID 16992)
+-- Name: antropometria_idatleta_fkey; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY antropometria
+    ADD CONSTRAINT antropometria_idatleta_fkey FOREIGN KEY (idatleta) REFERENCES atleta(id);
+
+
+--
+-- TOC entry 2386 (class 2606 OID 16842)
+-- Name: atendente_codsuperior_fkey; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY atendente
+    ADD CONSTRAINT atendente_codsuperior_fkey FOREIGN KEY (codsuperior) REFERENCES atendente(codatendente);
+
+
+--
+-- TOC entry 2384 (class 2606 OID 16813)
+-- Name: ex_multa_cnh_fkey; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY ex_multa
+    ADD CONSTRAINT ex_multa_cnh_fkey FOREIGN KEY (cnh) REFERENCES ex_motorista(cnh);
+
+
+--
+-- TOC entry 2385 (class 2606 OID 16818)
+-- Name: ex_multa_idcategoria_fkey; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY ex_multa
+    ADD CONSTRAINT ex_multa_idcategoria_fkey FOREIGN KEY (idcategoria) REFERENCES ex_categoria(idcategoria);
+
+
+--
+-- TOC entry 2377 (class 2606 OID 16429)
+-- Name: fk_obra_op; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY obra_operario
+    ADD CONSTRAINT fk_obra_op FOREIGN KEY (cart_trab) REFERENCES operario(cart_trab);
+
+
+--
+-- TOC entry 2378 (class 2606 OID 16439)
+-- Name: fk_opconst; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY operario_construtora
+    ADD CONSTRAINT fk_opconst FOREIGN KEY (cart_trab) REFERENCES operario(cart_trab);
+
+
+--
+-- TOC entry 2388 (class 2606 OID 16861)
+-- Name: hospedagem_codatendente_fkey; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY hospedagem
+    ADD CONSTRAINT hospedagem_codatendente_fkey FOREIGN KEY (codatendente) REFERENCES atendente(codatendente);
+
+
+--
+-- TOC entry 2387 (class 2606 OID 16856)
+-- Name: hospedagem_codhospede_fkey; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY hospedagem
+    ADD CONSTRAINT hospedagem_codhospede_fkey FOREIGN KEY (codhospede) REFERENCES hospede(codhospede);
+
+
+--
+-- TOC entry 2374 (class 2606 OID 16404)
+-- Name: obra_cod_const_fkey; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY obra
+    ADD CONSTRAINT obra_cod_const_fkey FOREIGN KEY (cod_const) REFERENCES construtora(cod_const);
+
+
+--
+-- TOC entry 2375 (class 2606 OID 16409)
+-- Name: obra_cod_eng_resp_fkey; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY obra
+    ADD CONSTRAINT obra_cod_eng_resp_fkey FOREIGN KEY (cod_eng_resp) REFERENCES engenheiro(crea);
+
+
+--
+-- TOC entry 2376 (class 2606 OID 16424)
+-- Name: obra_operario_cod_obra_fkey; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY obra_operario
+    ADD CONSTRAINT obra_operario_cod_obra_fkey FOREIGN KEY (cod_obra) REFERENCES obra(cod_obra);
+
+
+--
+-- TOC entry 2379 (class 2606 OID 16444)
+-- Name: operario_construtora_cod_const_fkey; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY operario_construtora
+    ADD CONSTRAINT operario_construtora_cod_const_fkey FOREIGN KEY (cod_const) REFERENCES construtora(cod_const);
+
+
+--
+-- TOC entry 2390 (class 2606 OID 17012)
+-- Name: tr_sal_emp_idemp_fkey; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY tr_sal_emp
+    ADD CONSTRAINT tr_sal_emp_idemp_fkey FOREIGN KEY (idemp) REFERENCES tr_emp(idemp);
+
+
+--
+-- TOC entry 2383 (class 2606 OID 16554)
+-- Name: xitensvenda_codproduto_fkey; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY xitensvenda
+    ADD CONSTRAINT xitensvenda_codproduto_fkey FOREIGN KEY (codproduto) REFERENCES xproduto(codproduto);
+
+
+--
+-- TOC entry 2382 (class 2606 OID 16549)
+-- Name: xitensvenda_nnf_fkey; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY xitensvenda
+    ADD CONSTRAINT xitensvenda_nnf_fkey FOREIGN KEY (nnf, dtvenda) REFERENCES xvenda(nnf, dtvenda);
+
+
+--
+-- TOC entry 2380 (class 2606 OID 16534)
+-- Name: xvenda_codcliente_fkey; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY xvenda
+    ADD CONSTRAINT xvenda_codcliente_fkey FOREIGN KEY (codcliente) REFERENCES xcliente(codcliente);
+
+
+--
+-- TOC entry 2381 (class 2606 OID 16539)
+-- Name: xvenda_codtppagamento_fkey; Type: FK CONSTRAINT; Schema: public; Owner: kopzinski
+--
+
+ALTER TABLE ONLY xvenda
+    ADD CONSTRAINT xvenda_codtppagamento_fkey FOREIGN KEY (codtppagamento) REFERENCES xtipospagamento(codtppagamento);
+
+
+--
+-- TOC entry 2546 (class 0 OID 0)
+-- Dependencies: 5
+-- Name: public; Type: ACL; Schema: -; Owner: kopzinski
+--
+
+REVOKE ALL ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON SCHEMA public FROM kopzinski;
+GRANT ALL ON SCHEMA public TO kopzinski;
+GRANT ALL ON SCHEMA public TO PUBLIC;
+
+
+-- Completed on 2015-11-08 12:46:36 BRST
+
+--
+-- PostgreSQL database dump complete
+--
+
